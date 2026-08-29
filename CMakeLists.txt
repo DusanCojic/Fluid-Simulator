@@ -9,26 +9,34 @@ project(
 
 find_package(CUDAToolkit REQUIRED)
 
-add_library(pbf INTERFACE)
+file(
+    GLOB_RECURSE PBF_SOURCES
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cu"
+)
+
+add_library(pbf STATIC ${PBF_SOURCES})
 
 add_library(FluidSimulator::pbf ALIAS pbf)
 
 target_compile_features(
     pbf
-    INTERFACE
+    PUBLIC
         cxx_std_17
+        cuda_std_17
 )
 
 target_include_directories(
     pbf
-    INTERFACE
+    PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
 
 target_link_libraries(
     pbf
-    INTERFACE
+    PUBLIC
         CUDA::cudart
 )
 
@@ -41,30 +49,35 @@ include(CTest)
 if(BUILD_TESTING)
 
     find_package(GTest REQUIRED)
+    include(GoogleTest)
 
-    add_executable(
-        test_cuda_buffer
-        test/test_cuda_buffer.cu
+    file(
+        GLOB PBF_TEST_SOURCES
+        CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/test_*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test/test_*.cu"
     )
 
-    target_link_libraries(
-        test_cuda_buffer
-        PRIVATE
-            FluidSimulator::pbf
-            CUDA::cudart
-            GTest::gtest_main
-    )
+    function(add_pbf_test test_source)
+        get_filename_component(test_target "${test_source}" NAME_WE)
 
-    set_target_properties(
-        test_cuda_buffer
-        PROPERTIES
-            CUDA_STANDARD 17
-            CUDA_STANDARD_REQUIRED ON
-    )
+        add_executable("${test_target}" "${test_source}")
 
-    add_test(
-        NAME CudaBufferIntegration
-        COMMAND test_cuda_buffer
-    )
+        target_link_libraries(
+            "${test_target}"
+            PRIVATE
+                FluidSimulator::pbf
+                GTest::gtest_main
+        )
+
+        gtest_discover_tests(
+            "${test_target}"
+            DISCOVERY_MODE PRE_TEST
+        )
+    endfunction()
+
+    foreach(test_source IN LISTS PBF_TEST_SOURCES)
+        add_pbf_test("${test_source}")
+    endforeach()
 
 endif()
