@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -253,6 +254,91 @@ TEST(CudaBufferTest, CopiesFloat4Data) {
         EXPECT_FLOAT_EQ(output[i].z, input[i].z);
         EXPECT_FLOAT_EQ(output[i].w, input[i].w);
     }
+}
+
+TEST(CudaBufferTest, FillBytesZeroesEntireBuffer) {
+    constexpr std::size_t bufferSize = 4097;
+
+    CudaBuffer<float> buffer(bufferSize);
+    std::vector<float> initial(bufferSize, 42.0f);
+    std::vector<float> output(bufferSize);
+
+    buffer.copyFromHostToDevice(initial.data(), bufferSize);
+
+    float* originalPtr = buffer.data();
+    buffer.fillBytes(0);
+
+    ASSERT_TRUE(cudaKernelCompletedSuccessfully());
+
+    EXPECT_EQ(buffer.data(), originalPtr);
+    EXPECT_EQ(buffer.size(), bufferSize);
+
+    buffer.copyFromDeviceToHost(output.data(), bufferSize);
+
+    for (std::size_t i = 0; i < bufferSize; ++i)
+        EXPECT_FLOAT_EQ(output[i], 0.0f) << "at index " << i;
+}
+
+TEST(CudaBufferTest, FillBytesSetsEveryIntegerToMinusOne) {
+    constexpr std::size_t bufferSize = 1024;
+
+    CudaBuffer<int> buffer(bufferSize);
+    std::vector<int> output(bufferSize);
+
+    buffer.fillBytes(-1);
+
+    ASSERT_TRUE(cudaKernelCompletedSuccessfully());
+
+    buffer.copyFromDeviceToHost(output.data(), bufferSize);
+
+    for (std::size_t i = 0; i < bufferSize; ++i)
+        EXPECT_EQ(output[i], -1) << "at index " << i;
+}
+
+TEST(CudaBufferTest, FillBytesUsesCudaByteFillSemantics) {
+    constexpr std::size_t bufferSize = 256;
+    constexpr std::uint32_t byteValue = 0xABU;
+    constexpr std::uint32_t expected = 0xABABABABU;
+
+    CudaBuffer<std::uint32_t> buffer(bufferSize);
+    std::vector<std::uint32_t> output(bufferSize);
+
+    buffer.fillBytes(byteValue);
+
+    ASSERT_TRUE(cudaKernelCompletedSuccessfully());
+
+    buffer.copyFromDeviceToHost(output.data(), bufferSize);
+
+    for (std::size_t i = 0; i < bufferSize; ++i)
+        EXPECT_EQ(output[i], expected) << "at index " << i;
+}
+
+TEST(CudaBufferTest, FillBytesWorksAfterReallocation) {
+    CudaBuffer<int> buffer(16);
+    buffer.fillBytes(-1);
+
+    constexpr std::size_t newBufferSize = 2048;
+    buffer.allocate(newBufferSize);
+    buffer.fillBytes(0);
+
+    ASSERT_TRUE(cudaKernelCompletedSuccessfully());
+
+    std::vector<int> output(newBufferSize);
+    buffer.copyFromDeviceToHost(output.data(), newBufferSize);
+
+    EXPECT_EQ(output, std::vector<int>(newBufferSize, 0));
+}
+
+TEST(CudaBufferTest, FillBytesOnEmptyBufferDoesNothing) {
+    CudaBuffer<int> buffer;
+
+    EXPECT_NO_THROW(buffer.fillBytes(-1));
+
+    buffer.allocate(0);
+
+    EXPECT_NO_THROW(buffer.fillBytes(0));
+    EXPECT_EQ(buffer.data(), nullptr);
+    EXPECT_EQ(buffer.size(), 0U);
 }
 
 TEST(CudaBufferTest, ThrowsWhenCopyExceedsBufferSize) {

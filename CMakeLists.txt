@@ -23,8 +23,8 @@ add_library(FluidSimulator::pbf ALIAS pbf)
 target_compile_features(
     pbf
     PUBLIC
-        cxx_std_17
-        cuda_std_17
+        cxx_std_20
+        cuda_std_20
 )
 
 target_include_directories(

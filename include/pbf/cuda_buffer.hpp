@@ -64,6 +64,18 @@ public:
         count_ = count;
     }
 
+    // Fills every byte in the allocation with the low eight bits of byteValue.
+    // This mirrors cudaMemset; it does not assign a value to each T element.
+    void fillBytes(int byteValue) {
+        if (count_ == 0)
+            return;
+
+        cudaError_t error = cudaMemset(ptr_, byteValue, count_ * sizeof(T));
+
+        if (error != cudaSuccess)
+            throw std::runtime_error(cudaGetErrorString(error));
+    }
+
     void copyFromHostToDevice(const T* source, std::size_t count) {
         if (count > count_)
             throw std::out_of_range("Source is larger than CUDA buffer");
