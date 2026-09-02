@@ -72,50 +72,6 @@ void SpatialGrid::initialize(std::size_t maxParticles, float3 minBounds, float3 
     _sortTempStorage.allocate(_sortTempStorageBytes);
 }
 
-// calculates cell to which particle belongs based on its position
-__device__
-int3 positionToCell(float4 position, float3 minBounds, float cellSize) {
-    int cellX = static_cast<int>(
-        floorf((position.x - minBounds.x) / cellSize)
-    );
-    
-    int cellY = static_cast<int>(
-        floorf((position.y - minBounds.y) / cellSize)
-    );
-
-    int cellZ = static_cast<int>(
-        floorf((position.z - minBounds.z) / cellSize)
-    );
-
-    return { cellX, cellY, cellZ };
-}
-
-// checks whether the given cell is within the grid bounds
-__device__
-bool isCellValid(int3 cell, int3 gridSize) {
-    return (cell.x >= 0 && cell.x < gridSize.x) &&
-        (cell.y >= 0 && cell.y < gridSize.y) &&
-        (cell.z >= 0 && cell.z < gridSize.z);
-}
-
-// calculates cell's key based on its coordinates and grid size
-__device__
-std::uint32_t cellToKey(int3 cell, int3 gridSize) {
-    return static_cast<std::uint32_t>(
-        cell.x + cell.y * gridSize.x + cell.z * gridSize.x * gridSize.y
-    );
-}
-
-// Clamps a cell coordinate to the valid bounds of the spatial grid.
-__device__
-int3 clampCellToGrid(int3 cell, int3 gridSize) {
-    cell.x = max(0, min(cell.x, gridSize.x - 1));
-    cell.y = max(0, min(cell.y, gridSize.y - 1));
-    cell.z = max(0, min(cell.z, gridSize.z - 1));
-
-    return cell;
-}
-
 // Computes the spatial grid key and original index for each particle.
 __global__
 void computeParticleKeys(const float4* predictedPositions, std::uint32_t* keys, std::uint32_t* indices,

@@ -61,4 +61,41 @@ private:
     float _cellSize = 0.0f;
 };
 
+// Grid helper functions
+__device__ inline int3 positionToCell(float4 position, float3 minBounds, float cellSize) {
+    int cellX = static_cast<int>(
+        floorf((position.x - minBounds.x) / cellSize)
+    );
+
+    int cellY = static_cast<int>(
+        floorf((position.y - minBounds.y) / cellSize)
+    );
+
+    int cellZ = static_cast<int>(
+        floorf((position.z - minBounds.z) / cellSize)
+    );
+
+    return { cellX, cellY, cellZ };
+}
+
+__device__ inline bool isCellValid(int3 cell, int3 gridSize) {
+    return (cell.x >= 0 && cell.x < gridSize.x) &&
+        (cell.y >= 0 && cell.y < gridSize.y) &&
+        (cell.z >= 0 && cell.z < gridSize.z);
+}
+
+__device__ inline std::uint32_t cellToKey(int3 cell, int3 gridSize) {
+    return static_cast<std::uint32_t>(
+        cell.x + cell.y * gridSize.x + cell.z * gridSize.x * gridSize.y
+    );
+}
+
+__device__ inline int3 clampCellToGrid(int3 cell, int3 gridSize) {
+    cell.x = max(0, min(cell.x, gridSize.x - 1));
+    cell.y = max(0, min(cell.y, gridSize.y - 1));
+    cell.z = max(0, min(cell.z, gridSize.z - 1));
+
+    return cell;
+}
+
 #endif
