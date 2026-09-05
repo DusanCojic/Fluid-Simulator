@@ -88,5 +88,6 @@ TEST(IntegrationTest, MultipleParticleIntegrationTest) {
         EXPECT_NEAR(resultPredicted[i].x, expectedPositionX, epsilon);
         EXPECT_NEAR(resultPredicted[i].y, expectedPositionY, epsilon);
         EXPECT_NEAR(resultPredicted[i].z, expectedPositionZ, epsilon);
+        EXPECT_EQ(resultPredicted[i].w, hPosition[i].w);
     }
 }

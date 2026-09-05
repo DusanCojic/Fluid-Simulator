@@ -286,6 +286,21 @@ TEST_F(SpatialGridTest, BuildsSingleParticle) {
     expectResultsEqual(actual, buildReference(grid, positions));
 }
 
+TEST_F(SpatialGridTest, EmptyBuildClearsAllCellRanges) {
+    SpatialGrid grid = initializedGrid();
+    const std::vector<float4> positions = {position(1.2f, 0.4f, 1.8f)};
+
+    const GridResult populated = buildAndRead(grid, positions);
+    ASSERT_NE(populated.cellStart[13], -1);
+
+    const GridResult empty = buildAndRead(grid, {});
+
+    EXPECT_TRUE(empty.sortedKeys.empty());
+    EXPECT_TRUE(empty.sortedIndices.empty());
+    EXPECT_EQ(empty.cellStart, std::vector<int>(grid.numCells(), -1));
+    EXPECT_EQ(empty.cellEnd, std::vector<int>(grid.numCells(), -1));
+}
+
 TEST_F(SpatialGridTest, BuildsParticlesInDifferentCells) {
     SpatialGrid grid = initializedGrid();
     const std::vector<float4> positions = {

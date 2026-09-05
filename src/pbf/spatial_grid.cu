@@ -118,6 +118,19 @@ void SpatialGrid::build(const float4* predictedPositions, std::size_t particleCo
             "Particle count exceeds maximum number of particles"
         );
 
+    // An empty build still has to clear ranges left by a previous build, but it
+    // must not launch a kernel with a zero-sized grid.
+    if (particleCount == 0) {
+        _cellStart.fillBytes(-1);
+        _cellEnd.fillBytes(-1);
+
+        const cudaError_t error = cudaDeviceSynchronize();
+        if (error != cudaSuccess)
+            throw std::runtime_error(cudaGetErrorString(error));
+
+        return;
+    }
+
     constexpr int blockSize = 256;
 
     const int gridSize = static_cast<int>(
@@ -171,6 +184,13 @@ void SpatialGrid::build(const float4* predictedPositions, std::size_t particleCo
     );
 
     error = cudaGetLastError();
+
+    if (error != cudaSuccess)
+        throw std::runtime_error(cudaGetErrorString(error));
+
+    // cudaGetLastError only validates the launch. Synchronizing here ensures
+    // that asynchronous execution failures are reported by this API call.
+    error = cudaDeviceSynchronize();
 
     if (error != cudaSuccess)
         throw std::runtime_error(cudaGetErrorString(error));

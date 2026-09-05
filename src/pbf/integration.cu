@@ -25,6 +25,7 @@ void integrate(const float4* position, float4* predictedPosition, float4* veloci
     predicted.x = p.x + v.x * dt;
     predicted.y = p.y + v.y * dt;
     predicted.z = p.z + v.z * dt;
+    predicted.w = p.w;
 
     // update global velocity and predictedPosition
     velocity[index] = v;
