@@ -14,7 +14,7 @@ void Poly6Kernel(float3 displacement, float smoothingRadius, float* result) {
 
 __global__
 void SpikyGradientsKernel(float3 displacement, float smoothingRadius, float3* result) {
-    *result = spikyGradients(displacement, smoothingRadius);
+    *result = spikyGradient(displacement, smoothingRadius);
 }
 
 void waitForKernel() {

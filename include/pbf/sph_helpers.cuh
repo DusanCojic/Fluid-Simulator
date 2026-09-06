@@ -43,7 +43,7 @@ inline float poly6(float3 displacement, float smoothingRadius) {
 // Computes the Spiky kernel gradient, which describes how the smoothing influence
 // changes with the distance and direction between two neighboring particles.
 __device__
-inline float3 spikyGradients(float3 displacement, float smoothingRadius) {
+inline float3 spikyGradient(float3 displacement, float smoothingRadius) {
     const float distanceSquared =
         displacement.x * displacement.x +
         displacement.y * displacement.y +
