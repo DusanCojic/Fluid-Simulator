@@ -1,5 +1,5 @@
 #include "pbf/cuda_buffer.hpp"
-#include "pbf/pbf_solver.cuh"
+#include "pbf/pbf_solver.hpp"
 
 #include <gtest/gtest.h>
 

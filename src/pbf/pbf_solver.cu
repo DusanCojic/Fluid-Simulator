@@ -1,4 +1,4 @@
-#include "pbf/pbf_solver.cuh"
+#include "pbf/pbf_solver.hpp"
 
 #include <cuda_runtime.h>
 
@@ -35,6 +35,11 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
     if (!std::isfinite(params.dt) || params.dt <= 0.0f ||
         !std::isfinite(params.restDensity) || params.restDensity <= 0.0f ||
         !std::isfinite(params.particleMass) || params.particleMass <= 0.0f ||
+        !std::isfinite(params.particleRadius) || params.particleRadius <= 0.0f ||
+        !std::isfinite(params.collisionRestitution) || params.collisionRestitution < 0.0f ||
+        params.collisionRestitution > 1.0f ||
+        !std::isfinite(params.collisionFriction) || params.collisionFriction < 0.0f ||
+        params.collisionFriction > 1.0f ||
         !std::isfinite(params.smoothingRadius) || params.smoothingRadius <= 0.0f ||
         !std::isfinite(params.lambdaEpsilon) || params.lambdaEpsilon < 0.0f ||
         !std::isfinite(params.gravity.x) || !std::isfinite(params.gravity.y) ||
@@ -45,6 +50,11 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
 
     spatialGrid_.initialize(maxParticles, minBounds, maxBounds,
                             params.smoothingRadius);
+
+    Container container;
+    container.min = minBounds;
+    container.max = maxBounds;
+    _collisionSystem.setContainer(container);
 
     positions_.allocate(maxParticles);
     predictedPositions_.allocate(maxParticles);
@@ -77,6 +87,18 @@ void PBFSolver::setParticles(const float4* positions, const float4* velocities,
     positions_.copyFromHostToDevice(positions, particleCount);
     velocities_.copyFromHostToDevice(velocities, particleCount);
     particleCount_ = particleCount;
+}
+
+void PBFSolver::setSpheres(const std::vector<SphereCollider>& spheres) {
+    _collisionSystem.setSpheres(spheres);
+}
+
+void PBFSolver::setBoxes(const std::vector<BoxCollider>& boxes) {
+    _collisionSystem.setBoxes(boxes);
+}
+
+void PBFSolver::setPlanes(const std::vector<PlaneCollider>& planes) {
+    _collisionSystem.setPlanes(planes);
 }
 
 void PBFSolver::step() {
@@ -138,11 +160,22 @@ void PBFSolver::step() {
                 predictedPositions_.data(), deltaPosition_.data(), particleCount_
             );
             checkKernelLaunch();
+
+            _collisionSystem.solve(
+                predictedPositions_.data(), particleCount_, params_.particleRadius
+            );
+            checkKernelLaunch();
         }
 
         updateVelocityAndPosition<<<gridSize, kBlockSize>>>(
             positions_.data(), predictedPositions_.data(), velocities_.data(),
             particleCount_, 1.0f / substepDt
+        );
+        checkKernelLaunch();
+
+        _collisionSystem.resolveVelocities(
+            positions_.data(), velocities_.data(), particleCount_, params_.particleRadius,
+            params_.collisionRestitution, params_.collisionFriction
         );
         checkKernelLaunch();
     }

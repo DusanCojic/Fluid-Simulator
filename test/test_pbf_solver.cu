@@ -1,4 +1,4 @@
-#include "pbf/pbf_solver.cuh"
+#include "pbf/pbf_solver.hpp"
 
 #include <gtest/gtest.h>
 
@@ -19,6 +19,9 @@ SimulationParams validParams() {
     params.dt = 0.1f;
     params.restDensity = 315.0f / (64.0f * pi);
     params.particleMass = 1.0f;
+    params.particleRadius = 1.0f;
+    params.collisionRestitution = 0.0f;
+    params.collisionFriction = 0.03f;
     params.smoothingRadius = 1.0f;
     params.lambdaEpsilon = 0.01f;
     params.solverIterations = 1;
@@ -68,6 +71,20 @@ void integrateReference(float4& position, float4& velocity, float dt,
         position.y += velocity.y * substepDt;
         position.z += velocity.z * substepDt;
     }
+}
+
+SimulationParams collisionParams() {
+    SimulationParams params = validParams();
+    params.dt = 0.1f;
+    params.particleRadius = 0.25f;
+    params.smoothingRadius = 0.5f;
+    params.restDensity = selfDensity(params.particleMass, params.smoothingRadius);
+    params.solverIterations = 4;
+    params.substeps = 1;
+    params.gravity = make_float3(0.0f, 0.0f, 0.0f);
+    params.collisionRestitution = 0.0f;
+    params.collisionFriction = 0.0f;
+    return params;
 }
 
 } // namespace
@@ -158,6 +175,39 @@ TEST(PBFSolverInitializationTest, RejectsInvalidSimulationParameters) {
     expectInvalid(params);
     params = validParams();
     params.particleMass = nan;
+    expectInvalid(params);
+
+    params = validParams();
+    params.particleRadius = 0.0f;
+    expectInvalid(params);
+    params = validParams();
+    params.particleRadius = infinity;
+    expectInvalid(params);
+
+    params = validParams();
+    params.collisionRestitution = -0.01f;
+    expectInvalid(params);
+    params = validParams();
+    params.collisionRestitution = 1.01f;
+    expectInvalid(params);
+    params = validParams();
+    params.collisionRestitution = nan;
+    expectInvalid(params);
+    params = validParams();
+    params.collisionRestitution = infinity;
+    expectInvalid(params);
+
+    params = validParams();
+    params.collisionFriction = -0.01f;
+    expectInvalid(params);
+    params = validParams();
+    params.collisionFriction = 1.01f;
+    expectInvalid(params);
+    params = validParams();
+    params.collisionFriction = nan;
+    expectInvalid(params);
+    params = validParams();
+    params.collisionFriction = infinity;
     expectInvalid(params);
 
     params = validParams();
@@ -480,4 +530,155 @@ TEST(PBFSolverLargeParticleTest, AdvancesParticlesAcrossSeveralCudaBlocks) {
         EXPECT_TRUE(std::isfinite(resultVelocities[i].y)) << "particle " << i;
         EXPECT_TRUE(std::isfinite(resultVelocities[i].z)) << "particle " << i;
     }
+}
+
+TEST(PBFSolverCollisionTest, ResolvesContainerPositionRestitutionAndFriction) {
+    PBFSolver solver;
+    SimulationParams params = collisionParams();
+    params.particleRadius = 0.5f;
+    params.collisionRestitution = 0.5f;
+    params.collisionFriction = 0.25f;
+    initializeSolver(solver, 1, params);
+
+    const float4 position = make_float4(-1.4f, 5.0f, 5.0f, 7.0f);
+    const float4 velocity = make_float4(-2.0f, 4.0f, 0.0f, 8.0f);
+    solver.setParticles(&position, &velocity, 1);
+    solver.step();
+
+    float4 resultPosition{};
+    float4 resultVelocity{};
+    solver.copyPositionsToHost(&resultPosition, 1);
+    solver.copyVelocitiesToHost(&resultVelocity, 1);
+
+    expectFloat4Near(resultPosition, make_float4(-1.5f, 5.4f, 5.0f, 7.0f), 1e-5f, 0);
+    expectFloat4Near(resultVelocity, make_float4(0.5f, 3.0f, 0.0f, 8.0f), 1e-5f, 0);
+}
+
+TEST(PBFSolverCollisionTest, PropagatesInvalidColliderConfiguration) {
+    PBFSolver solver;
+    initializeSolver(solver, 1, collisionParams());
+
+    EXPECT_THROW(
+        solver.setSpheres({ { make_float3(0.0f, 0.0f, 0.0f), 0.0f } }),
+        std::invalid_argument
+    );
+    EXPECT_THROW(
+        solver.setBoxes({
+            { make_float3(0.0f, 0.0f, 0.0f), make_float3(1.0f, -1.0f, 1.0f) }
+        }),
+        std::invalid_argument
+    );
+    EXPECT_THROW(
+        solver.setPlanes({
+            { make_float3(0.0f, 0.0f, 0.0f), make_float3(0.0f, 0.0f, 0.0f) }
+        }),
+        std::invalid_argument
+    );
+}
+
+TEST(PBFSolverCollisionTest, ForwardsSphereColliderAndCanClearIt) {
+    PBFSolver solver;
+    const SimulationParams params = collisionParams();
+    initializeSolver(solver, 1, params);
+    solver.setSpheres({ { make_float3(3.0f, 5.0f, 5.0f), 0.5f } });
+
+    const float4 position = make_float4(4.0f, 5.0f, 5.0f, 1.0f);
+    const float4 velocity = make_float4(-4.0f, 0.0f, 0.0f, 2.0f);
+    solver.setParticles(&position, &velocity, 1);
+    solver.step();
+
+    float4 resultPosition{};
+    float4 resultVelocity{};
+    solver.copyPositionsToHost(&resultPosition, 1);
+    solver.copyVelocitiesToHost(&resultVelocity, 1);
+    expectFloat4Near(resultPosition, make_float4(3.75f, 5.0f, 5.0f, 1.0f), 1e-5f, 0);
+    expectFloat4Near(resultVelocity, make_float4(0.0f, 0.0f, 0.0f, 2.0f), 1e-5f, 0);
+
+    solver.setSpheres({});
+    solver.setParticles(&position, &velocity, 1);
+    solver.step();
+    solver.copyPositionsToHost(&resultPosition, 1);
+    solver.copyVelocitiesToHost(&resultVelocity, 1);
+    expectFloat4Near(resultPosition, make_float4(3.6f, 5.0f, 5.0f, 1.0f), 1e-5f, 0);
+    expectFloat4Near(resultVelocity, velocity, 1e-5f, 0);
+}
+
+TEST(PBFSolverCollisionTest, ForwardsBoxCollider) {
+    PBFSolver solver;
+    const SimulationParams params = collisionParams();
+    initializeSolver(solver, 1, params);
+    solver.setBoxes({
+        { make_float3(3.0f, 5.0f, 5.0f), make_float3(0.5f, 0.5f, 0.5f) }
+    });
+
+    const float4 position = make_float4(4.0f, 5.0f, 5.0f, 3.0f);
+    const float4 velocity = make_float4(-4.0f, 0.0f, 0.0f, 4.0f);
+    solver.setParticles(&position, &velocity, 1);
+    solver.step();
+
+    float4 resultPosition{};
+    float4 resultVelocity{};
+    solver.copyPositionsToHost(&resultPosition, 1);
+    solver.copyVelocitiesToHost(&resultVelocity, 1);
+    expectFloat4Near(resultPosition, make_float4(3.75f, 5.0f, 5.0f, 3.0f), 1e-5f, 0);
+    expectFloat4Near(resultVelocity, make_float4(0.0f, 0.0f, 0.0f, 4.0f), 1e-5f, 0);
+}
+
+TEST(PBFSolverCollisionTest, ForwardsPlaneCollider) {
+    PBFSolver solver;
+    const SimulationParams params = collisionParams();
+    initializeSolver(solver, 1, params);
+    solver.setPlanes({
+        { make_float3(0.0f, 2.0f, 0.0f), make_float3(0.0f, 2.0f, 0.0f) }
+    });
+
+    const float4 position = make_float4(5.0f, 2.4f, 5.0f, 5.0f);
+    const float4 velocity = make_float4(0.0f, -3.0f, 0.0f, 6.0f);
+    solver.setParticles(&position, &velocity, 1);
+    solver.step();
+
+    float4 resultPosition{};
+    float4 resultVelocity{};
+    solver.copyPositionsToHost(&resultPosition, 1);
+    solver.copyVelocitiesToHost(&resultVelocity, 1);
+    expectFloat4Near(resultPosition, make_float4(5.0f, 2.25f, 5.0f, 5.0f), 1e-5f, 0);
+    expectFloat4Near(resultVelocity, make_float4(0.0f, 0.0f, 0.0f, 6.0f), 1e-5f, 0);
+}
+
+TEST(PBFSolverCollisionTest, ResolvesCombinedColliderTypesInOneStep) {
+    PBFSolver solver;
+    const SimulationParams params = collisionParams();
+    initializeSolver(solver, 3, params);
+    solver.setSpheres({ { make_float3(2.0f, 6.0f, 2.0f), 0.5f } });
+    solver.setBoxes({
+        { make_float3(6.0f, 6.0f, 2.0f), make_float3(0.5f, 0.5f, 0.5f) }
+    });
+    solver.setPlanes({
+        { make_float3(0.0f, 2.0f, 0.0f), make_float3(0.0f, 1.0f, 0.0f) }
+    });
+
+    const std::vector<float4> positions = {
+        make_float4(3.0f, 6.0f, 2.0f, 1.0f),
+        make_float4(7.0f, 6.0f, 2.0f, 2.0f),
+        make_float4(10.0f, 2.4f, 2.0f, 3.0f)
+    };
+    const std::vector<float4> velocities = {
+        make_float4(-4.0f, 0.0f, 0.0f, 4.0f),
+        make_float4(-4.0f, 0.0f, 0.0f, 5.0f),
+        make_float4(0.0f, -3.0f, 0.0f, 6.0f)
+    };
+    solver.setParticles(positions.data(), velocities.data(), positions.size());
+    solver.step();
+
+    std::vector<float4> resultPositions(positions.size());
+    std::vector<float4> resultVelocities(velocities.size());
+    solver.copyPositionsToHost(resultPositions.data(), resultPositions.size());
+    solver.copyVelocitiesToHost(resultVelocities.data(), resultVelocities.size());
+
+    expectFloat4Near(resultPositions[0], make_float4(2.75f, 6.0f, 2.0f, 1.0f), 1e-5f, 0);
+    expectFloat4Near(resultPositions[1], make_float4(6.75f, 6.0f, 2.0f, 2.0f), 1e-5f, 1);
+    expectFloat4Near(resultPositions[2], make_float4(10.0f, 2.25f, 2.0f, 3.0f), 1e-5f, 2);
+    expectFloat4Near(resultVelocities[0], make_float4(0.0f, 0.0f, 0.0f, 4.0f), 1e-5f, 0);
+    expectFloat4Near(resultVelocities[1], make_float4(0.0f, 0.0f, 0.0f, 5.0f), 1e-5f, 1);
+    expectFloat4Near(resultVelocities[2], make_float4(0.0f, 0.0f, 0.0f, 6.0f), 1e-5f, 2);
 }

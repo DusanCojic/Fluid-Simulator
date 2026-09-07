@@ -7,11 +7,9 @@
 #include "pbf/simulation_params.hpp"
 #include "pbf/integration.cuh"
 #include "pbf/neighbors.cuh"
-
-#pragma once
-
 #include "pbf/cuda_buffer.hpp"
 #include "pbf/spatial_grid.cuh"
+#include "pbf/collision_system.hpp"
 
 class PBFSolver {
 public:
@@ -20,6 +18,10 @@ public:
 
     void setParticles(const float4* positions, const float4* velocities,
                       size_t particleCount);
+
+    void setSpheres(const std::vector<SphereCollider>& spheres);
+    void setBoxes(const std::vector<BoxCollider>& boxes);
+    void setPlanes(const std::vector<PlaneCollider>& planes);
 
     void step();
 
@@ -47,6 +49,8 @@ private:
     CudaBuffer<float> constraints_;
     CudaBuffer<float> lambda_;
     CudaBuffer<float4> deltaPosition_;
+
+    CollisionSystem _collisionSystem;
 };
 
 

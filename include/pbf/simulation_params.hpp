@@ -8,11 +8,14 @@ struct SimulationParams {
 
     float restDensity;        // target fluid density
     float particleMass;       // mass of one particle
+    float particleRadius;     // collision radius of one particle
+    float collisionRestitution; // collision bounce strength
+    float collisionFriction;    // collision tangential damping
     float smoothingRadius;    // particle interaction radius
 
     float lambdaEpsilon;      // constraint solver stabilization
 
-    int solverIterations;     // PBF iterations per substep
+    int solverIterations;     // PBF iterations per substep, four or more recommended
     int substeps;             // simulation substeps per frame
 
     float3 gravity;           // gravitational acceleration vector
