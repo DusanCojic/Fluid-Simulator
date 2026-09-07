@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 constexpr int kBlockSize = 256;
 constexpr int kMaxNeighbors = 256;
@@ -42,6 +43,12 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
         params.collisionFriction > 1.0f ||
         !std::isfinite(params.smoothingRadius) || params.smoothingRadius <= 0.0f ||
         !std::isfinite(params.lambdaEpsilon) || params.lambdaEpsilon < 0.0f ||
+        !std::isfinite(params.scorrK) || params.scorrK < 0.0f ||
+        (params.scorrK > 0.0f &&
+         (params.scorrN <= 0 || !std::isfinite(params.scorrDeltaQ) ||
+          params.scorrDeltaQ < 0.0f || params.scorrDeltaQ >= params.smoothingRadius)) ||
+        !std::isfinite(params.xsphViscosity) || params.xsphViscosity < 0.0f ||
+        !std::isfinite(params.vorticityStrength) || params.vorticityStrength < 0.0f ||
         !std::isfinite(params.gravity.x) || !std::isfinite(params.gravity.y) ||
         !std::isfinite(params.gravity.z) ||
         params.solverIterations <= 0 || params.substeps <= 0) {
@@ -59,6 +66,8 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
     positions_.allocate(maxParticles);
     predictedPositions_.allocate(maxParticles);
     velocities_.allocate(maxParticles);
+    xsphVelocities_.allocate(maxParticles);
+    vorticity_.allocate(maxParticles);
     neighbors_.allocate(maxParticles * static_cast<size_t>(kMaxNeighbors));
     neighborsCount_.allocate(maxParticles);
     density_.allocate(maxParticles);
@@ -152,6 +161,7 @@ void PBFSolver::step() {
                 predictedPositions_.data(), neighbors_.data(), neighborsCount_.data(),
                 kMaxNeighbors, lambda_.data(), particleCount_,
                 params_.smoothingRadius, params_.particleMass, params_.restDensity,
+                params_.scorrK, params_.scorrN, params_.scorrDeltaQ,
                 deltaPosition_.data()
             );
             checkKernelLaunch();
@@ -167,11 +177,54 @@ void PBFSolver::step() {
             checkKernelLaunch();
         }
 
+        if (params_.xsphViscosity != 0.0f || params_.vorticityStrength != 0.0f) {
+            // The last constraint correction and collision projection changed
+            // positions after the final solver neighbor build.  Rebuild before
+            // post-solve velocity effects so they use final neighborhoods.
+            spatialGrid_.build(predictedPositions_.data(), particleCount_);
+            findNeighbors<<<gridSize, kBlockSize>>>(
+                predictedPositions_.data(), spatialGrid_.sortedIndices(),
+                spatialGrid_.cellStart(), spatialGrid_.cellEnd(),
+                spatialGrid_.gridSize(), spatialGrid_.minBounds(),
+                spatialGrid_.cellSize(), particleCount_, params_.smoothingRadius,
+                neighbors_.data(), neighborsCount_.data(), kMaxNeighbors
+            );
+            checkKernelLaunch();
+        }
+
         updateVelocityAndPosition<<<gridSize, kBlockSize>>>(
             positions_.data(), predictedPositions_.data(), velocities_.data(),
             particleCount_, 1.0f / substepDt
         );
         checkKernelLaunch();
+
+        if (params_.xsphViscosity != 0.0f) {
+            applyXsphViscosity<<<gridSize, kBlockSize>>>(
+                predictedPositions_.data(), neighbors_.data(), neighborsCount_.data(),
+                kMaxNeighbors, velocities_.data(), xsphVelocities_.data(), particleCount_,
+                params_.smoothingRadius, params_.xsphViscosity
+            );
+            checkKernelLaunch();
+            std::swap(velocities_, xsphVelocities_);
+        }
+
+        if (params_.vorticityStrength != 0.0f) {
+            computeVorticity<<<gridSize, kBlockSize>>>(
+                predictedPositions_.data(), velocities_.data(), neighbors_.data(),
+                neighborsCount_.data(), kMaxNeighbors, particleCount_,
+                params_.smoothingRadius, vorticity_.data()
+            );
+            checkKernelLaunch();
+
+            applyVorticityConfinement<<<gridSize, kBlockSize>>>(
+                predictedPositions_.data(), neighbors_.data(), neighborsCount_.data(),
+                kMaxNeighbors, vorticity_.data(), velocities_.data(),
+                xsphVelocities_.data(), particleCount_, params_.smoothingRadius,
+                substepDt, params_.vorticityStrength
+            );
+            checkKernelLaunch();
+            std::swap(velocities_, xsphVelocities_);
+        }
 
         _collisionSystem.resolveVelocities(
             positions_.data(), velocities_.data(), particleCount_, params_.particleRadius,
@@ -187,7 +240,14 @@ void PBFSolver::run() {
     if (maxParticles_ == 0)
         throw std::logic_error("PBFSolver must be initialized before running");
 
-    for (int iteration = 0; iteration < params_.solverIterations; ++iteration)
+    step();
+}
+
+void PBFSolver::run(std::size_t frameCount) {
+    if (maxParticles_ == 0)
+        throw std::logic_error("PBFSolver must be initialized before running");
+
+    for (std::size_t frame = 0; frame < frameCount; ++frame)
         step();
 }
 

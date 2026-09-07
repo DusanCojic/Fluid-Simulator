@@ -66,8 +66,8 @@ if(BUILD_TESTING)
         target_link_libraries(
             "${test_target}"
             PRIVATE
-                FluidSimulator::pbf
-                GTest::gtest_main
+            FluidSimulator::pbf
+            GTest::gtest_main
         )
 
         gtest_discover_tests(

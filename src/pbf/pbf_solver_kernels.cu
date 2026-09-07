@@ -129,9 +129,10 @@ void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, c
 }
 
 
-    __global__
+__global__
 void computeDeltaPosition(const float4* predictedPosition, const uint32_t* neighbors, const int* neighborsCount, int maxNeighbors, 
-    const float* lambdas, size_t particleCount, float smoothingRadius, float particleMass, float restDensity, float4* deltaPositions) {
+    const float* lambdas, size_t particleCount, float smoothingRadius, float particleMass, float restDensity,
+    float scorrK, int scorrN, float scorrDeltaQ, float4* deltaPositions) {
 
     const size_t index =
         static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -178,8 +179,15 @@ void computeDeltaPosition(const float4* predictedPosition, const uint32_t* neigh
         const float3 gradientW =
             spikyGradient(displacement, smoothingRadius);
 
+        const float distanceSquared =
+            diffX * diffX + diffY * diffY + diffZ * diffZ;
+
+        const float sCorr = computeArtificialPressure(
+            distanceSquared, smoothingRadius, scorrK, scorrN, scorrDeltaQ
+        );
+
         const float lambdaSum =
-            lambdaI + lambdas[neighborIndex];
+            lambdaI + lambdas[neighborIndex] + sCorr;
 
         deltaPosition.x += lambdaSum * gradientW.x;
         deltaPosition.y += lambdaSum * gradientW.y;
@@ -224,4 +232,172 @@ void updateVelocityAndPosition(float4* positions, const float4* predictedPositio
     velocities[index].y = (predictedPosition.y - position.y) * inverseDt;
     velocities[index].z = (predictedPosition.z - position.z) * inverseDt;
     positions[index] = predictedPosition;
+}
+
+__global__
+void applyXsphViscosity(const float4* predictedPositions, const uint32_t* neighbors, const int* neighborsCount, 
+    int maxNeighbors, const float4* inputVelocities, float4* outputVelocities, std::size_t particleCount, 
+    float smoothingRadius, float xsphViscosity) {
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+
+    if (index >= particleCount)
+        return;
+
+    const float4 velocity = inputVelocities[index];
+    const int neighborsCnt = neighborsCount[index];
+
+    if (!hasValidNeighborCount(neighborsCnt, maxNeighbors)) {
+        outputVelocities[index] = {
+            CUDART_NAN_F,
+            CUDART_NAN_F,
+            CUDART_NAN_F,
+            velocity.w
+        };
+        return;
+    }
+
+    if (xsphViscosity == 0.0f) {
+        outputVelocities[index] = velocity;
+        return;
+    }
+
+    const float4 particlePosition = predictedPositions[index];
+    float3 correction = {0.0f, 0.0f, 0.0f};
+
+    for (int neighborOffset = 0; neighborOffset < neighborsCnt; ++neighborOffset) {
+        const uint32_t neighborIndex = neighbors[index * maxNeighbors + neighborOffset];
+        const float4 neighborPosition = predictedPositions[neighborIndex];
+        const float4 neighborVelocity = inputVelocities[neighborIndex];
+        const float3 displacement = {
+            particlePosition.x - neighborPosition.x,
+            particlePosition.y - neighborPosition.y,
+            particlePosition.z - neighborPosition.z
+        };
+        const float weight = poly6(displacement, smoothingRadius);
+
+        correction.x += (neighborVelocity.x - velocity.x) * weight;
+        correction.y += (neighborVelocity.y - velocity.y) * weight;
+        correction.z += (neighborVelocity.z - velocity.z) * weight;
+    }
+
+    outputVelocities[index] = {
+        velocity.x + xsphViscosity * correction.x,
+        velocity.y + xsphViscosity * correction.y,
+        velocity.z + xsphViscosity * correction.z,
+        velocity.w
+    };
+}
+
+__global__
+void computeVorticity(const float4* positions, const float4* velocities,
+                      const uint32_t* neighbors, const int* neighborsCount,
+                      int maxNeighbors, std::size_t particleCount,
+                      float smoothingRadius, float4* vorticity) {
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+
+    if (index >= particleCount)
+        return;
+
+    const int neighborsCnt = neighborsCount[index];
+    if (!hasValidNeighborCount(neighborsCnt, maxNeighbors)) {
+        vorticity[index] = {CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F, 0.0f};
+        return;
+    }
+
+    const float4 position = positions[index];
+    const float4 velocity = velocities[index];
+    float3 omega = {0.0f, 0.0f, 0.0f};
+
+    for (int neighborOffset = 0; neighborOffset < neighborsCnt; ++neighborOffset) {
+        const uint32_t neighborIndex = neighbors[index * maxNeighbors + neighborOffset];
+        const float4 neighborPosition = positions[neighborIndex];
+        const float4 neighborVelocity = velocities[neighborIndex];
+        const float3 displacement = {
+            position.x - neighborPosition.x,
+            position.y - neighborPosition.y,
+            position.z - neighborPosition.z
+        };
+        const float3 gradient = spikyGradient(displacement, smoothingRadius);
+        const float3 velocityDifference = {
+            neighborVelocity.x - velocity.x,
+            neighborVelocity.y - velocity.y,
+            neighborVelocity.z - velocity.z
+        };
+
+        omega.x += velocityDifference.y * gradient.z - velocityDifference.z * gradient.y;
+        omega.y += velocityDifference.z * gradient.x - velocityDifference.x * gradient.z;
+        omega.z += velocityDifference.x * gradient.y - velocityDifference.y * gradient.x;
+    }
+
+    vorticity[index] = {omega.x, omega.y, omega.z, 0.0f};
+}
+
+__global__
+void applyVorticityConfinement(const float4* positions, const uint32_t* neighbors,
+                               const int* neighborsCount, int maxNeighbors,
+                               const float4* vorticity,
+                               const float4* inputVelocities,
+                               float4* outputVelocities,
+                               std::size_t particleCount,
+                               float smoothingRadius, float dt,
+                               float vorticityStrength) {
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+
+    if (index >= particleCount)
+        return;
+
+    const float4 velocity = inputVelocities[index];
+    const int neighborsCnt = neighborsCount[index];
+    if (!hasValidNeighborCount(neighborsCnt, maxNeighbors)) {
+        outputVelocities[index] = {CUDART_NAN_F, CUDART_NAN_F, CUDART_NAN_F, velocity.w};
+        return;
+    }
+
+    const float4 position = positions[index];
+    const float4 omegaI = vorticity[index];
+    const float omegaILength = sqrtf(
+        omegaI.x * omegaI.x + omegaI.y * omegaI.y + omegaI.z * omegaI.z
+    );
+    float3 eta = {0.0f, 0.0f, 0.0f};
+
+    for (int neighborOffset = 0; neighborOffset < neighborsCnt; ++neighborOffset) {
+        const uint32_t neighborIndex = neighbors[index * maxNeighbors + neighborOffset];
+        const float4 neighborPosition = positions[neighborIndex];
+        const float4 omegaJ = vorticity[neighborIndex];
+        const float omegaJLength = sqrtf(
+            omegaJ.x * omegaJ.x + omegaJ.y * omegaJ.y + omegaJ.z * omegaJ.z
+        );
+        const float3 displacement = {
+            position.x - neighborPosition.x,
+            position.y - neighborPosition.y,
+            position.z - neighborPosition.z
+        };
+        const float3 gradient = spikyGradient(displacement, smoothingRadius);
+        const float magnitudeDifference = omegaJLength - omegaILength;
+        eta.x += magnitudeDifference * gradient.x;
+        eta.y += magnitudeDifference * gradient.y;
+        eta.z += magnitudeDifference * gradient.z;
+    }
+
+    constexpr float normalizationEpsilon = 1.0e-6f;
+    const float etaLength = sqrtf(eta.x * eta.x + eta.y * eta.y + eta.z * eta.z);
+    float3 normal = {0.0f, 0.0f, 0.0f};
+    if (etaLength > normalizationEpsilon) {
+        normal = {eta.x / etaLength, eta.y / etaLength, eta.z / etaLength};
+    }
+
+    const float3 confinement = {
+        vorticityStrength * (normal.y * omegaI.z - normal.z * omegaI.y),
+        vorticityStrength * (normal.z * omegaI.x - normal.x * omegaI.z),
+        vorticityStrength * (normal.x * omegaI.y - normal.y * omegaI.x)
+    };
+    outputVelocities[index] = {
+        velocity.x + dt * confinement.x,
+        velocity.y + dt * confinement.y,
+        velocity.z + dt * confinement.z,
+        velocity.w
+    };
 }

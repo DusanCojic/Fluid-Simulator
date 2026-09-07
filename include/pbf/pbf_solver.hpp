@@ -25,7 +25,10 @@ public:
 
     void step();
 
+    // Advances one simulation frame.  A frame consists of params.substeps
+    // substeps, each with params.solverIterations constraint iterations.
     void run();
+    void run(std::size_t frameCount);
 
     void copyPositionsToHost(float4* positions, size_t particleCount) const;
     void copyVelocitiesToHost(float4* velocities, size_t particleCount) const;
@@ -41,6 +44,8 @@ private:
     CudaBuffer<float4> positions_;
     CudaBuffer<float4> predictedPositions_;
     CudaBuffer<float4> velocities_;
+    CudaBuffer<float4> xsphVelocities_;
+    CudaBuffer<float4> vorticity_;
 
     CudaBuffer<uint32_t> neighbors_;
     CudaBuffer<int> neighborsCount_;

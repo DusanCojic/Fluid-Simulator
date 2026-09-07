@@ -40,6 +40,15 @@ float selfDensity(float particleMass, float smoothingRadius) {
         (64.0f * pi * std::pow(smoothingRadius, 3.0f));
 }
 
+float pairDensityContribution(float particleMass, float distance,
+                              float smoothingRadius) {
+    const float radiusSquared = smoothingRadius * smoothingRadius;
+    const float difference = radiusSquared - distance * distance;
+    return particleMass * 315.0f /
+        (64.0f * pi * std::pow(smoothingRadius, 9.0f)) *
+        difference * difference * difference;
+}
+
 void initializeSolver(PBFSolver& solver, std::size_t capacity,
                       const SimulationParams& params) {
     solver.initialize(
@@ -247,6 +256,13 @@ TEST(PBFSolverInitializationTest, RejectsInvalidSimulationParameters) {
     params = validParams();
     params.substeps = -1;
     expectInvalid(params);
+
+    params = validParams();
+    params.vorticityStrength = -0.01f;
+    expectInvalid(params);
+    params = validParams();
+    params.vorticityStrength = infinity;
+    expectInvalid(params);
 }
 
 TEST(PBFSolverParticleDataTest, RejectsInvalidParticleInput) {
@@ -434,7 +450,7 @@ TEST(PBFSolverStepTest, SeparatesTwoNeighboringParticlesSymmetrically) {
     EXPECT_FLOAT_EQ(resultVelocities[1].w, velocities[1].w);
 }
 
-TEST(PBFSolverRunTest, ExecutesConfiguredNumberOfSteps) {
+TEST(PBFSolverRunTest, ExplicitFrameCountIsIndependentOfSolverIterations) {
     PBFSolver solver;
     SimulationParams params = validParams();
     params.dt = 0.1f;
@@ -447,14 +463,15 @@ TEST(PBFSolverRunTest, ExecutesConfiguredNumberOfSteps) {
     const float4 velocity = make_float4(2.0f, -1.0f, 0.5f, 6.0f);
     solver.setParticles(&position, &velocity, 1);
 
-    solver.run();
+    constexpr std::size_t frameCount = 2;
+    solver.run(frameCount);
 
     float4 resultPosition{};
     float4 resultVelocity{};
     solver.copyPositionsToHost(&resultPosition, 1);
     solver.copyVelocitiesToHost(&resultVelocity, 1);
 
-    const float elapsedTime = params.dt * static_cast<float>(params.solverIterations);
+    const float elapsedTime = params.dt * static_cast<float>(frameCount);
     const float4 expectedPosition = make_float4(
         position.x + velocity.x * elapsedTime,
         position.y + velocity.y * elapsedTime,
@@ -464,6 +481,27 @@ TEST(PBFSolverRunTest, ExecutesConfiguredNumberOfSteps) {
 
     expectFloat4Near(resultPosition, expectedPosition, 1e-5f, 0);
     expectFloat4Near(resultVelocity, velocity, 1e-5f, 0);
+}
+
+TEST(PBFSolverRunTest, NoArgumentRunAdvancesOneFrame) {
+    PBFSolver solver;
+    SimulationParams params = validParams();
+    params.dt = 0.1f;
+    params.solverIterations = 4;
+    params.gravity = make_float3(0.0f, 0.0f, 0.0f);
+    initializeSolver(solver, 1, params);
+
+    const float4 initialPosition = make_float4(1.0f, 2.0f, 3.0f, 4.0f);
+    const float4 initialVelocity = make_float4(2.0f, -1.0f, 0.5f, 5.0f);
+    solver.setParticles(&initialPosition, &initialVelocity, 1);
+    solver.run();
+
+    float4 position{};
+    float4 velocity{};
+    solver.copyPositionsToHost(&position, 1);
+    solver.copyVelocitiesToHost(&velocity, 1);
+    expectFloat4Near(position, make_float4(1.2f, 1.9f, 3.05f, 4.0f), 1e-5f, 0);
+    expectFloat4Near(velocity, initialVelocity, 1e-5f, 0);
 }
 
 TEST(PBFSolverLargeParticleTest, AdvancesParticlesAcrossSeveralCudaBlocks) {
@@ -681,4 +719,100 @@ TEST(PBFSolverCollisionTest, ResolvesCombinedColliderTypesInOneStep) {
     expectFloat4Near(resultVelocities[0], make_float4(0.0f, 0.0f, 0.0f, 4.0f), 1e-5f, 0);
     expectFloat4Near(resultVelocities[1], make_float4(0.0f, 0.0f, 0.0f, 5.0f), 1e-5f, 1);
     expectFloat4Near(resultVelocities[2], make_float4(0.0f, 0.0f, 0.0f, 6.0f), 1e-5f, 2);
+}
+
+TEST(PBFSolverPostSolveNeighborsTest,
+     XsphUsesNeighborsFromFinalCollisionCorrectedPositions) {
+    PBFSolver solver;
+    SimulationParams params = validParams();
+    params.dt = 0.1f;
+    params.gravity = make_float3(0.0f, 0.0f, 0.0f);
+    params.solverIterations = 1;
+    params.substeps = 1;
+    params.particleRadius = 0.25f;
+    params.smoothingRadius = 1.0f;
+    params.xsphViscosity = 1.0f;
+    // The initial pair is exactly density-neutral, so only the sphere
+    // projection changes their positions during the constraint solve.
+    params.restDensity = selfDensity(params.particleMass, params.smoothingRadius) +
+        pairDensityContribution(params.particleMass, 0.8f, params.smoothingRadius);
+    initializeSolver(solver, 2, params);
+    solver.setSpheres({{make_float3(5.0f, 5.0f, 5.0f), 0.5f}});
+
+    const std::vector<float4> positions = {
+        make_float4(4.6f, 5.0f, 5.0f, 1.0f),
+        make_float4(5.4f, 5.0f, 5.0f, 2.0f)
+    };
+    const std::vector<float4> velocities = {
+        make_float4(0.0f, 0.0f, 0.0f, 3.0f),
+        make_float4(0.0f, 0.0f, 0.0f, 4.0f)
+    };
+    solver.setParticles(positions.data(), velocities.data(), positions.size());
+    solver.step();
+
+    std::vector<float4> finalPositions(2);
+    std::vector<float4> finalVelocities(2);
+    solver.copyPositionsToHost(finalPositions.data(), finalPositions.size());
+    solver.copyVelocitiesToHost(finalVelocities.data(), finalVelocities.size());
+
+    EXPECT_NEAR(finalPositions[0].x, 4.25f, 1e-5f);
+    EXPECT_NEAR(finalPositions[1].x, 5.75f, 1e-5f);
+    // Their final distance is 1.5 > h.  With a rebuilt final neighbor list,
+    // XSPH has no neighbor correction and preserves reconstructed velocity.
+    EXPECT_NEAR(finalVelocities[0].x, -3.5f, 1e-4f);
+    EXPECT_NEAR(finalVelocities[1].x, 3.5f, 1e-4f);
+    EXPECT_FLOAT_EQ(finalVelocities[0].w, velocities[0].w);
+    EXPECT_FLOAT_EQ(finalVelocities[1].w, velocities[1].w);
+}
+
+TEST(PBFSolverDeterminismTest, FixedScenarioRepeatsExactly) {
+    SimulationParams params = collisionParams();
+    params.dt = 0.01f;
+    params.substeps = 2;
+    params.solverIterations = 3;
+    params.xsphViscosity = 0.03f;
+    params.vorticityStrength = 0.02f;
+    params.scorrK = 0.001f;
+    params.scorrN = 4;
+    params.scorrDeltaQ = 0.15f;
+    params.gravity = make_float3(0.0f, -1.0f, 0.0f);
+
+    const std::vector<float4> initialPositions = {
+        make_float4(4.7f, 6.0f, 5.0f, 1.0f),
+        make_float4(5.1f, 6.0f, 5.0f, 2.0f),
+        make_float4(4.9f, 6.35f, 5.0f, 3.0f),
+        make_float4(5.3f, 6.35f, 5.0f, 4.0f)
+    };
+    const std::vector<float4> initialVelocities = {
+        make_float4(0.1f, 0.0f, 0.0f, 5.0f),
+        make_float4(-0.1f, 0.0f, 0.0f, 6.0f),
+        make_float4(0.0f, 0.1f, 0.0f, 7.0f),
+        make_float4(0.0f, -0.1f, 0.0f, 8.0f)
+    };
+
+    PBFSolver first;
+    PBFSolver second;
+    initializeSolver(first, initialPositions.size(), params);
+    initializeSolver(second, initialPositions.size(), params);
+    first.setParticles(initialPositions.data(), initialVelocities.data(), initialPositions.size());
+    second.setParticles(initialPositions.data(), initialVelocities.data(), initialPositions.size());
+    first.run(10);
+    second.run(10);
+
+    std::vector<float4> firstPositions(initialPositions.size());
+    std::vector<float4> secondPositions(initialPositions.size());
+    std::vector<float4> firstVelocities(initialPositions.size());
+    std::vector<float4> secondVelocities(initialPositions.size());
+    first.copyPositionsToHost(firstPositions.data(), firstPositions.size());
+    second.copyPositionsToHost(secondPositions.data(), secondPositions.size());
+    first.copyVelocitiesToHost(firstVelocities.data(), firstVelocities.size());
+    second.copyVelocitiesToHost(secondVelocities.data(), secondVelocities.size());
+
+    for (std::size_t i = 0; i < initialPositions.size(); ++i) {
+        EXPECT_TRUE(std::isfinite(firstPositions[i].x));
+        EXPECT_TRUE(std::isfinite(firstPositions[i].y));
+        EXPECT_TRUE(std::isfinite(firstPositions[i].z));
+        expectFloat4Near(firstPositions[i], secondPositions[i], 0.0f, i);
+        expectFloat4Near(firstVelocities[i], secondVelocities[i], 0.0f, i);
+    }
 }

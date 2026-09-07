@@ -21,7 +21,7 @@ struct SimulationParams {
     float3 gravity;           // gravitational acceleration vector
 
     float scorrK;             // artificial pressure strength
-    float scorrN;             // artificial pressure exponent
+    int scorrN;               // artificial pressure exponent
     float scorrDeltaQ;        // artificial pressure reference distance
 
     float xsphViscosity;      // velocity smoothing strength
