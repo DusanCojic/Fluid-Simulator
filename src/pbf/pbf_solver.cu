@@ -42,7 +42,7 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
         !std::isfinite(params.collisionFriction) || params.collisionFriction < 0.0f ||
         params.collisionFriction > 1.0f ||
         !std::isfinite(params.smoothingRadius) || params.smoothingRadius <= 0.0f ||
-        !std::isfinite(params.lambdaEpsilon) || params.lambdaEpsilon < 0.0f ||
+        !std::isfinite(params.lambdaEpsilon) || params.lambdaEpsilon <= 0.0f ||
         !std::isfinite(params.scorrK) || params.scorrK < 0.0f ||
         (params.scorrK > 0.0f &&
          (params.scorrN <= 0 || !std::isfinite(params.scorrDeltaQ) ||
@@ -54,6 +54,20 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
         params.solverIterations <= 0 || params.substeps <= 0) {
         throw std::invalid_argument("Invalid PBF simulation parameters");
     }
+
+    const float substepDt = params.dt / static_cast<float>(params.substeps);
+    if (!std::isfinite(substepDt) || substepDt <= 0.0f ||
+        !std::isfinite(1.0f / substepDt)) {
+        throw std::invalid_argument("Substep duration is not representable");
+    }
+
+    const double containerWidth =
+        static_cast<double>(maxBounds.x) - static_cast<double>(minBounds.x);
+    const double containerDepth =
+        static_cast<double>(maxBounds.z) - static_cast<double>(minBounds.z);
+    const double particleDiameter = 2.0 * static_cast<double>(params.particleRadius);
+    if (containerWidth < particleDiameter || containerDepth < particleDiameter)
+        throw std::invalid_argument("Particle diameter exceeds closed container dimensions");
 
     spatialGrid_.initialize(maxParticles, minBounds, maxBounds,
                             params.smoothingRadius);
@@ -67,9 +81,11 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
     predictedPositions_.allocate(maxParticles);
     velocities_.allocate(maxParticles);
     xsphVelocities_.allocate(maxParticles);
+    collisionInputVelocities_.allocate(maxParticles);
     vorticity_.allocate(maxParticles);
     neighbors_.allocate(maxParticles * static_cast<size_t>(kMaxNeighbors));
     neighborsCount_.allocate(maxParticles);
+    neighborOverflow_.allocate(1);
     density_.allocate(maxParticles);
     constraints_.allocate(maxParticles);
     lambda_.allocate(maxParticles);
@@ -129,17 +145,30 @@ void PBFSolver::step() {
         );
         checkKernelLaunch();
 
+        checkCuda(cudaMemcpy(
+            collisionInputVelocities_.data(), velocities_.data(),
+            particleCount_ * sizeof(float4), cudaMemcpyDeviceToDevice
+        ));
+
         for (int iteration = 0; iteration < params_.solverIterations; ++iteration) {
             spatialGrid_.build(predictedPositions_.data(), particleCount_);
+
+            neighborOverflow_.fillBytes(0);
 
             findNeighbors<<<gridSize, kBlockSize>>>(
                 predictedPositions_.data(), spatialGrid_.sortedIndices(),
                 spatialGrid_.cellStart(), spatialGrid_.cellEnd(),
                 spatialGrid_.gridSize(), spatialGrid_.minBounds(),
                 spatialGrid_.cellSize(), particleCount_, params_.smoothingRadius,
-                neighbors_.data(), neighborsCount_.data(), kMaxNeighbors
+                neighbors_.data(), neighborsCount_.data(), kMaxNeighbors,
+                neighborOverflow_.data()
             );
             checkKernelLaunch();
+
+            int neighborOverflow = 0;
+            neighborOverflow_.copyFromDeviceToHost(&neighborOverflow, 1);
+            if (neighborOverflow != 0)
+                throw std::overflow_error("Particle neighbor count exceeds solver capacity");
 
             computeDensity<<<gridSize, kBlockSize>>>(
                 predictedPositions_.data(), neighbors_.data(), neighborsCount_.data(),
@@ -182,14 +211,21 @@ void PBFSolver::step() {
             // positions after the final solver neighbor build.  Rebuild before
             // post-solve velocity effects so they use final neighborhoods.
             spatialGrid_.build(predictedPositions_.data(), particleCount_);
+            neighborOverflow_.fillBytes(0);
             findNeighbors<<<gridSize, kBlockSize>>>(
                 predictedPositions_.data(), spatialGrid_.sortedIndices(),
                 spatialGrid_.cellStart(), spatialGrid_.cellEnd(),
                 spatialGrid_.gridSize(), spatialGrid_.minBounds(),
                 spatialGrid_.cellSize(), particleCount_, params_.smoothingRadius,
-                neighbors_.data(), neighborsCount_.data(), kMaxNeighbors
+                neighbors_.data(), neighborsCount_.data(), kMaxNeighbors,
+                neighborOverflow_.data()
             );
             checkKernelLaunch();
+
+            int neighborOverflow = 0;
+            neighborOverflow_.copyFromDeviceToHost(&neighborOverflow, 1);
+            if (neighborOverflow != 0)
+                throw std::overflow_error("Particle neighbor count exceeds solver capacity");
         }
 
         updateVelocityAndPosition<<<gridSize, kBlockSize>>>(
@@ -227,8 +263,9 @@ void PBFSolver::step() {
         }
 
         _collisionSystem.resolveVelocities(
-            positions_.data(), velocities_.data(), particleCount_, params_.particleRadius,
-            params_.collisionRestitution, params_.collisionFriction
+            positions_.data(), collisionInputVelocities_.data(), velocities_.data(),
+            particleCount_, params_.particleRadius, params_.collisionRestitution,
+            params_.collisionFriction
         );
         checkKernelLaunch();
     }

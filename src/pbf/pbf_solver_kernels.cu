@@ -326,9 +326,11 @@ void computeVorticity(const float4* positions, const float4* velocities,
             neighborVelocity.z - velocity.z
         };
 
-        omega.x += velocityDifference.y * gradient.z - velocityDifference.z * gradient.y;
-        omega.y += velocityDifference.z * gradient.x - velocityDifference.x * gradient.z;
-        omega.z += velocityDifference.x * gradient.y - velocityDifference.y * gradient.x;
+        // curl(v) uses grad_i W x (v_j - v_i).  Equivalently, the PBF
+        // paper writes (v_j - v_i) x grad_j W.
+        omega.x += gradient.y * velocityDifference.z - gradient.z * velocityDifference.y;
+        omega.y += gradient.z * velocityDifference.x - gradient.x * velocityDifference.z;
+        omega.z += gradient.x * velocityDifference.y - gradient.y * velocityDifference.x;
     }
 
     vorticity[index] = {omega.x, omega.y, omega.z, 0.0f};

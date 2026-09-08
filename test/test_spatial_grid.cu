@@ -251,6 +251,38 @@ TEST(SpatialGridInitializationTest, RejectsNegativeCellSize) {
     );
 }
 
+TEST(SpatialGridInitializationTest, RejectsNonFiniteBoundsAndCellSize) {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    SpatialGrid grid;
+
+    EXPECT_THROW(
+        grid.initialize(
+            1, make_float3(nan, 0.0f, 0.0f),
+            make_float3(1.0f, 1.0f, 1.0f), 1.0f
+        ),
+        std::invalid_argument
+    );
+    EXPECT_THROW(
+        grid.initialize(
+            1, make_float3(0.0f, 0.0f, 0.0f),
+            make_float3(1.0f, 1.0f, 1.0f), nan
+        ),
+        std::invalid_argument
+    );
+}
+
+TEST(SpatialGridInitializationTest, RejectsGridLargerThanKeyCapacity) {
+    SpatialGrid grid;
+
+    EXPECT_THROW(
+        grid.initialize(
+            1, make_float3(0.0f, 0.0f, 0.0f),
+            make_float3(65536.0f, 65536.0f, 2.0f), 1.0f
+        ),
+        std::length_error
+    );
+}
+
 TEST(SpatialGridInitializationTest, RejectsInvalidBoundsOnEachAxis) {
     SpatialGrid grid;
     const float3 validMin = make_float3(0.0f, 0.0f, 0.0f);

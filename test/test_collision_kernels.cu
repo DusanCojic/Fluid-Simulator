@@ -153,7 +153,7 @@ VelocityResult resolveVelocities(
 
     const int gridSize = static_cast<int>((particleCount + blockSize - 1) / blockSize);
     resolveVelocitiesKernel<<<gridSize, blockSize>>>(
-        devicePositions.data(), deviceVelocities.data(), particleCount,
+        devicePositions.data(), deviceVelocities.data(), deviceVelocities.data(), particleCount,
         deviceContainer.data(), deviceSpheres.data(), spheres.size(),
         deviceBoxes.data(), boxes.size(), devicePlanes.data(), planes.size(),
         particleRadius, restitution, friction

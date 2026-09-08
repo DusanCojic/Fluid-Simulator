@@ -738,7 +738,7 @@ TEST(VorticityConfinementTest, MatchesCpuReferenceAndDoesNotModifyInputVelocity)
                                                            velocities[j].y - velocities[i].y,
                                                            velocities[j].z - velocities[i].z);
             const float3 contribution = crossReference(
-                velocityDifference, spikyGradientReference(displacement, smoothingRadius)
+                spikyGradientReference(displacement, smoothingRadius), velocityDifference
             );
             expectedOmega[i].x += contribution.x;
             expectedOmega[i].y += contribution.y;
@@ -811,4 +811,8 @@ TEST(VorticityConfinementTest, MatchesCpuReferenceAndDoesNotModifyInputVelocity)
         EXPECT_FLOAT_EQ(unchangedInput[i].z, velocities[i].z);
         EXPECT_FLOAT_EQ(unchangedInput[i].w, velocities[i].w);
     }
+
+    // v = (-y, x, 0) has positive z curl. Check the physical sign instead
+    // of only duplicating the kernel algebra in the CPU reference.
+    EXPECT_GT(actualOmega[0].z, 0.0f);
 }

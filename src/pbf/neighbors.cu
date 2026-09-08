@@ -3,7 +3,8 @@
 __global__
 void findNeighbors(const float4* predictedPositions, const uint32_t* sortedIndices, const int* cellStart, const int* cellEnd,
                    int3 gridSize, float3 minBounds, float cellSize, size_t particleCount, float smoothingRadius,
-                   uint32_t* neighbors, int* neighborsCount, int maxNeighbors) {
+                   uint32_t* neighbors, int* neighborsCount, int maxNeighbors,
+                   int* overflowFlag) {
 
     size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
@@ -78,4 +79,7 @@ void findNeighbors(const float4* predictedPositions, const uint32_t* sortedIndic
     }
 
     neighborsCount[index] = count;
+
+    if (count > maxNeighbors && overflowFlag != nullptr)
+        atomicExch(overflowFlag, 1);
 }

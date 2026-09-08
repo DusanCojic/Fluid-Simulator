@@ -86,7 +86,10 @@ __device__ inline bool isCellValid(int3 cell, int3 gridSize) {
 
 __device__ inline std::uint32_t cellToKey(int3 cell, int3 gridSize) {
     return static_cast<std::uint32_t>(
-        cell.x + cell.y * gridSize.x + cell.z * gridSize.x * gridSize.y
+        static_cast<std::uint64_t>(cell.x) +
+        static_cast<std::uint64_t>(cell.y) * static_cast<std::uint64_t>(gridSize.x) +
+        static_cast<std::uint64_t>(cell.z) * static_cast<std::uint64_t>(gridSize.x) *
+            static_cast<std::uint64_t>(gridSize.y)
     );
 }
 

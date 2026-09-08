@@ -67,8 +67,8 @@ void applyXsphViscosity(const float4* predictedPositions, const uint32_t* neighb
                         std::size_t particleCount, float smoothingRadius,
                         float xsphViscosity);
 
-// Computes omega_i = sum_j (v_j - v_i) x grad W(p_i - p_j).  This must finish
-// before applyVorticityConfinement consumes neighboring omega values.
+// Computes omega_i = sum_j grad_i W(p_i - p_j) x (v_j - v_i).  This must
+// finish before applyVorticityConfinement consumes neighboring omega values.
 __global__
 void computeVorticity(const float4* positions, const float4* velocities,
                       const uint32_t* neighbors, const int* neighborsCount,

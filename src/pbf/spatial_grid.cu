@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 
 void SpatialGrid::initialize(std::size_t maxParticles, float3 minBounds, float3 maxBounds, float cellSize) {
@@ -11,11 +12,19 @@ void SpatialGrid::initialize(std::size_t maxParticles, float3 minBounds, float3 
     if (maxParticles == 0)
         throw std::invalid_argument("maxParticles must be greater than zero");
 
-    if (cellSize <= 0.0f)
+    if (!std::isfinite(cellSize) || cellSize <= 0.0f)
         throw std::invalid_argument("cellSize must be greater than zero");
 
-    if (maxBounds.x <= minBounds.x || maxBounds.y <= minBounds.y || maxBounds.z <= minBounds.z)
+    if (!std::isfinite(minBounds.x) || !std::isfinite(minBounds.y) ||
+        !std::isfinite(minBounds.z) || !std::isfinite(maxBounds.x) ||
+        !std::isfinite(maxBounds.y) || !std::isfinite(maxBounds.z) ||
+        maxBounds.x <= minBounds.x || maxBounds.y <= minBounds.y ||
+        maxBounds.z <= minBounds.z) {
         throw std::invalid_argument("Invalid spatial grid bounds");
+    }
+
+    if (maxParticles > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        throw std::length_error("Particle count exceeds grid range index capacity");
 
     // Store configuration
     _maxParticles = maxParticles;
@@ -24,22 +33,34 @@ void SpatialGrid::initialize(std::size_t maxParticles, float3 minBounds, float3 
     _cellSize = cellSize;
 
     // Calculate grid dimensions
-    _gridSize.x = static_cast<int>(
-        std::ceil((_maxBounds.x - _minBounds.x) / _cellSize)
-    );
+    const auto cellCountForAxis = [cellSize](float minBound, float maxBound) {
+        const double count = std::ceil(
+            (static_cast<double>(maxBound) - static_cast<double>(minBound)) /
+            static_cast<double>(cellSize)
+        );
 
-    _gridSize.y = static_cast<int>(
-        std::ceil((_maxBounds.y - _minBounds.y) / _cellSize)
-    );
+        if (!std::isfinite(count) || count < 1.0 ||
+            count > static_cast<double>(std::numeric_limits<int>::max())) {
+            throw std::length_error("Spatial grid axis exceeds integer capacity");
+        }
 
-    _gridSize.z = static_cast<int>(
-        std::ceil((_maxBounds.z - _minBounds.z) / _cellSize)
-    );
+        return static_cast<int>(count);
+    };
 
-    _numCells =
-        static_cast<std::size_t>(_gridSize.x) *
-        static_cast<std::size_t>(_gridSize.y) *
-        static_cast<std::size_t>(_gridSize.z);
+    _gridSize.x = cellCountForAxis(_minBounds.x, _maxBounds.x);
+    _gridSize.y = cellCountForAxis(_minBounds.y, _maxBounds.y);
+    _gridSize.z = cellCountForAxis(_minBounds.z, _maxBounds.z);
+
+    const std::size_t maxCells =
+        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max());
+    const std::size_t cellsX = static_cast<std::size_t>(_gridSize.x);
+    const std::size_t cellsY = static_cast<std::size_t>(_gridSize.y);
+    const std::size_t cellsZ = static_cast<std::size_t>(_gridSize.z);
+
+    if (cellsX > maxCells / cellsY || cellsX * cellsY > maxCells / cellsZ)
+        throw std::length_error("Spatial grid exceeds 32-bit key capacity");
+
+    _numCells = cellsX * cellsY * cellsZ;
 
     // Allocate per-particle buffers
     _keys.allocate(_maxParticles);

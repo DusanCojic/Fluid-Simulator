@@ -12,7 +12,8 @@
 __global__
 void findNeighbors(const float4* predictedPositions, const uint32_t* sortedIndices, const int* cellStart, const int* cellEnd,
                    int3 gridSize, float3 minBounds, float cellSize, size_t particleCount, float smoothingRadius,
-                   uint32_t* neighbors, int* neighborsCount, int maxNeighbors);
+                   uint32_t* neighbors, int* neighborsCount, int maxNeighbors,
+                   int* overflowFlag = nullptr);
 
 
 #endif

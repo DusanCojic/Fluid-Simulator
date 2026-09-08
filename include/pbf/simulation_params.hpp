@@ -4,7 +4,7 @@
 #include <vector_types.h>
 
 struct SimulationParams {
-    float dt;                 // time step
+    float dt;                 // frame time step; each substep uses dt / substeps
 
     float restDensity;        // target fluid density
     float particleMass;       // mass of one particle
@@ -13,7 +13,7 @@ struct SimulationParams {
     float collisionFriction;    // collision tangential damping
     float smoothingRadius;    // particle interaction radius
 
-    float lambdaEpsilon;      // constraint solver stabilization
+    float lambdaEpsilon;      // positive constraint solver stabilization
 
     int solverIterations;     // PBF iterations per substep, four or more recommended
     int substeps;             // simulation substeps per frame

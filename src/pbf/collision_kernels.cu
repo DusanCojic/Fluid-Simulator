@@ -1,8 +1,40 @@
 #include "pbf/collision_kernels.cuh"
 
+namespace {
+
+__device__ void markCorrection(int* correctionFlag) {
+    if (correctionFlag != nullptr)
+        atomicExch(correctionFlag, 1);
+}
+
+__device__ void resolveContactVelocity(float3 normal, const float4& incomingVelocity,
+    float restitution, float tangentScale, float4& velocity) {
+    const float normalVelocity =
+        velocity.x * normal.x + velocity.y * normal.y + velocity.z * normal.z;
+    const float incomingNormalVelocity = incomingVelocity.x * normal.x +
+        incomingVelocity.y * normal.y + incomingVelocity.z * normal.z;
+    const float targetNormalVelocity = incomingNormalVelocity < 0.0f
+        ? -restitution * incomingNormalVelocity
+        : 0.0f;
+
+    if (normalVelocity >= targetNormalVelocity)
+        return;
+
+    const float3 tangent = make_float3(
+        velocity.x - normalVelocity * normal.x,
+        velocity.y - normalVelocity * normal.y,
+        velocity.z - normalVelocity * normal.z
+    );
+    velocity.x = targetNormalVelocity * normal.x + tangentScale * tangent.x;
+    velocity.y = targetNormalVelocity * normal.y + tangentScale * tangent.y;
+    velocity.z = targetNormalVelocity * normal.z + tangentScale * tangent.z;
+}
+
+} // namespace
+
 __global__
 void solveContainerKernel(float4* predictedPositions, std::size_t particleCount,
-    const Container* container, float particleRadius) {
+    const Container* container, float particleRadius, int* correctionFlag) {
 
     const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
@@ -10,6 +42,7 @@ void solveContainerKernel(float4* predictedPositions, std::size_t particleCount,
         return;
 
     float4 position = predictedPositions[index];
+    const float4 originalPosition = position;
 
     const float minX = container->min.x + particleRadius;
     const float maxX = container->max.x - particleRadius;
@@ -28,12 +61,18 @@ void solveContainerKernel(float4* predictedPositions, std::size_t particleCount,
     // front/back walls
     position.z = fminf(fmaxf(position.z, minZ), maxZ);
 
+    if (position.x != originalPosition.x || position.y != originalPosition.y ||
+        position.z != originalPosition.z) {
+        markCorrection(correctionFlag);
+    }
+
     predictedPositions[index] = position;
 }
 
 __global__
 void solveSpheresKernel(float4* predictedPositions, std::size_t particleCount,
-    const SphereCollider* spheres, std::size_t sphereCount, float particleRadius) {
+    const SphereCollider* spheres, std::size_t sphereCount, float particleRadius,
+    int* correctionFlag) {
 
     const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
@@ -53,6 +92,8 @@ void solveSpheresKernel(float4* predictedPositions, std::size_t particleCount,
         const float distanceSquared = offset.x * offset.x + offset.y * offset.y + offset.z * offset.z;
 
         if (distanceSquared < minDistance * minDistance) {
+            markCorrection(correctionFlag);
+
             if (distanceSquared == 0.0f) {
                 position.x = sphere.center.x + minDistance;
             } else {
@@ -69,7 +110,8 @@ void solveSpheresKernel(float4* predictedPositions, std::size_t particleCount,
 
 __global__
 void solveBoxesKernel(float4* predictedPositions, std::size_t particleCount,
-    const BoxCollider* boxes, std::size_t boxCount, float particleRadius) {
+    const BoxCollider* boxes, std::size_t boxCount, float particleRadius,
+    int* correctionFlag) {
         
     const std::size_t index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x +
@@ -105,11 +147,13 @@ void solveBoxesKernel(float4* predictedPositions, std::size_t particleCount,
         const float distanceSquared = offset.x * offset.x + offset.y * offset.y + offset.z * offset.z;
 
         if (distanceSquared > 0.0f && distanceSquared < particleRadius * particleRadius) {
+            markCorrection(correctionFlag);
             const float scale = particleRadius / sqrtf(distanceSquared);
             position.x = closest.x + offset.x * scale;
             position.y = closest.y + offset.y * scale;
             position.z = closest.z + offset.z * scale;
         } else if (distanceSquared == 0.0f) {
+            markCorrection(correctionFlag);
             const float distanceX = fminf(position.x - min.x, max.x - position.x);
             const float distanceY = fminf(position.y - min.y, max.y - position.y);
             const float distanceZ = fminf(position.z - min.z, max.z - position.z);
@@ -128,7 +172,8 @@ void solveBoxesKernel(float4* predictedPositions, std::size_t particleCount,
 
 __global__
 void solvePlanesKernel(float4* predictedPositions, std::size_t particleCount,
-    const PlaneCollider* planes, std::size_t planeCount, float particleRadius) {
+    const PlaneCollider* planes, std::size_t planeCount, float particleRadius,
+    int* correctionFlag) {
 
     const std::size_t index = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
@@ -156,6 +201,7 @@ void solvePlanesKernel(float4* predictedPositions, std::size_t particleCount,
             (position.z - plane.point.z) * normal.z;
 
         if (distance < particleRadius) {
+            markCorrection(correctionFlag);
             const float correction = particleRadius - distance;
             position.x += normal.x * correction;
             position.y += normal.y * correction;
@@ -167,7 +213,8 @@ void solvePlanesKernel(float4* predictedPositions, std::size_t particleCount,
 }
 
 __global__
-void resolveVelocitiesKernel(const float4* positions, float4* velocities,
+void resolveVelocitiesKernel(const float4* positions, const float4* incomingVelocities,
+    float4* velocities,
     std::size_t particleCount, const Container* container,
     const SphereCollider* spheres, std::size_t sphereCount,
     const BoxCollider* boxes, std::size_t boxCount,
@@ -180,6 +227,7 @@ void resolveVelocitiesKernel(const float4* positions, float4* velocities,
         return;
 
     const float4 position = positions[index];
+    const float4 incomingVelocity = incomingVelocities[index];
     float4 velocity = velocities[index];
     const float tangentScale = 1.0f - friction;
     constexpr float collisionEpsilon = 1e-4f;
@@ -190,33 +238,23 @@ void resolveVelocitiesKernel(const float4* positions, float4* velocities,
     const float minZ = container->min.z + particleRadius;
     const float maxZ = container->max.z - particleRadius;
 
-    if (position.x <= minX + collisionEpsilon && velocity.x < 0.0f) {
-        velocity.x = -restitution * velocity.x;
-        velocity.y *= tangentScale;
-        velocity.z *= tangentScale;
-    } 
-    else if (position.x >= maxX - collisionEpsilon && velocity.x > 0.0f) {
-        velocity.x = -restitution * velocity.x;
-        velocity.y *= tangentScale;
-        velocity.z *= tangentScale;
-    }
+    if (position.x <= minX + collisionEpsilon)
+        resolveContactVelocity(make_float3(1.0f, 0.0f, 0.0f), incomingVelocity,
+            restitution, tangentScale, velocity);
+    else if (position.x >= maxX - collisionEpsilon)
+        resolveContactVelocity(make_float3(-1.0f, 0.0f, 0.0f), incomingVelocity,
+            restitution, tangentScale, velocity);
 
-    if (position.y <= minY + collisionEpsilon && velocity.y < 0.0f) {
-        velocity.x *= tangentScale;
-        velocity.y = -restitution * velocity.y;
-        velocity.z *= tangentScale;
-    }
+    if (position.y <= minY + collisionEpsilon)
+        resolveContactVelocity(make_float3(0.0f, 1.0f, 0.0f), incomingVelocity,
+            restitution, tangentScale, velocity);
 
-    if (position.z <= minZ + collisionEpsilon && velocity.z < 0.0f) {
-        velocity.x *= tangentScale;
-        velocity.y *= tangentScale;
-        velocity.z = -restitution * velocity.z;
-    }
-    else if (position.z >= maxZ - collisionEpsilon && velocity.z > 0.0f) {
-        velocity.x *= tangentScale;
-        velocity.y *= tangentScale;
-        velocity.z = -restitution * velocity.z;
-    }
+    if (position.z <= minZ + collisionEpsilon)
+        resolveContactVelocity(make_float3(0.0f, 0.0f, 1.0f), incomingVelocity,
+            restitution, tangentScale, velocity);
+    else if (position.z >= maxZ - collisionEpsilon)
+        resolveContactVelocity(make_float3(0.0f, 0.0f, -1.0f), incomingVelocity,
+            restitution, tangentScale, velocity);
 
     for (std::size_t sphereIndex = 0; sphereIndex < sphereCount; ++sphereIndex) {
         const SphereCollider sphere = spheres[sphereIndex];
@@ -233,18 +271,7 @@ void resolveVelocitiesKernel(const float4* positions, float4* velocities,
         if (distanceSquared > 0.0f && distanceSquared <= contactDistance * contactDistance) {
             const float scale = 1.0f / sqrtf(distanceSquared);
             const float3 normal = make_float3(offset.x * scale, offset.y * scale, offset.z * scale);
-            const float normalVelocity = velocity.x * normal.x + velocity.y * normal.y + velocity.z * normal.z;
-
-            if (normalVelocity < 0.0f) {
-                const float3 tangent = make_float3(
-                    velocity.x - normalVelocity * normal.x,
-                    velocity.y - normalVelocity * normal.y,
-                    velocity.z - normalVelocity * normal.z
-                );
-                velocity.x = -restitution * normalVelocity * normal.x + tangentScale * tangent.x;
-                velocity.y = -restitution * normalVelocity * normal.y + tangentScale * tangent.y;
-                velocity.z = -restitution * normalVelocity * normal.z + tangentScale * tangent.z;
-            }
+            resolveContactVelocity(normal, incomingVelocity, restitution, tangentScale, velocity);
         }
     }
 
@@ -293,19 +320,7 @@ void resolveVelocitiesKernel(const float4* positions, float4* velocities,
         else
             continue;
 
-        const float normalVelocity = velocity.x * normal.x + velocity.y * normal.y + velocity.z * normal.z;
-
-        if (normalVelocity < 0.0f) {
-            const float3 tangent = make_float3(
-                velocity.x - normalVelocity * normal.x,
-                velocity.y - normalVelocity * normal.y,
-                velocity.z - normalVelocity * normal.z
-            );
-
-            velocity.x = -restitution * normalVelocity * normal.x + tangentScale * tangent.x;
-            velocity.y = -restitution * normalVelocity * normal.y + tangentScale * tangent.y;
-            velocity.z = -restitution * normalVelocity * normal.z + tangentScale * tangent.z;
-        }
+        resolveContactVelocity(normal, incomingVelocity, restitution, tangentScale, velocity);
     }
 
     for (std::size_t planeIndex = 0; planeIndex < planeCount; ++planeIndex) {
@@ -327,19 +342,8 @@ void resolveVelocitiesKernel(const float4* positions, float4* velocities,
             (position.y - plane.point.y) * normal.y +
             (position.z - plane.point.z) * normal.z;
 
-        const float normalVelocity = velocity.x * normal.x + velocity.y * normal.y + velocity.z * normal.z;
-
-        if (distance <= particleRadius + collisionEpsilon && normalVelocity < 0.0f) {
-            const float3 tangent = make_float3(
-                velocity.x - normalVelocity * normal.x,
-                velocity.y - normalVelocity * normal.y,
-                velocity.z - normalVelocity * normal.z
-            );
-
-            velocity.x = -restitution * normalVelocity * normal.x + tangentScale * tangent.x;
-            velocity.y = -restitution * normalVelocity * normal.y + tangentScale * tangent.y;
-            velocity.z = -restitution * normalVelocity * normal.z + tangentScale * tangent.z;
-        }
+        if (distance <= particleRadius + collisionEpsilon)
+            resolveContactVelocity(normal, incomingVelocity, restitution, tangentScale, velocity);
     }
 
     velocities[index] = velocity;

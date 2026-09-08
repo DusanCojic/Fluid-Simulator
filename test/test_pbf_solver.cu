@@ -146,6 +146,17 @@ TEST(PBFSolverInitializationTest, RejectsInvalidCapacityAndBounds) {
         ),
         std::invalid_argument
     );
+
+    PBFSolver undersizedContainerSolver;
+    EXPECT_THROW(
+        undersizedContainerSolver.initialize(
+            8,
+            make_float3(0.0f, 0.0f, 0.0f),
+            make_float3(1.0f, 2.0f, 1.0f),
+            params
+        ),
+        std::invalid_argument
+    );
 }
 
 TEST(PBFSolverInitializationTest, RejectsInvalidSimulationParameters) {
@@ -170,6 +181,10 @@ TEST(PBFSolverInitializationTest, RejectsInvalidSimulationParameters) {
     expectInvalid(params);
     params = validParams();
     params.dt = nan;
+    expectInvalid(params);
+    params = validParams();
+    params.dt = std::numeric_limits<float>::denorm_min();
+    params.substeps = 2;
     expectInvalid(params);
 
     params = validParams();
@@ -226,6 +241,9 @@ TEST(PBFSolverInitializationTest, RejectsInvalidSimulationParameters) {
     params.smoothingRadius = infinity;
     expectInvalid(params);
 
+    params = validParams();
+    params.lambdaEpsilon = 0.0f;
+    expectInvalid(params);
     params = validParams();
     params.lambdaEpsilon = -0.01f;
     expectInvalid(params);
@@ -589,7 +607,47 @@ TEST(PBFSolverCollisionTest, ResolvesContainerPositionRestitutionAndFriction) {
     solver.copyVelocitiesToHost(&resultVelocity, 1);
 
     expectFloat4Near(resultPosition, make_float4(-1.5f, 5.4f, 5.0f, 7.0f), 1e-5f, 0);
-    expectFloat4Near(resultVelocity, make_float4(0.5f, 3.0f, 0.0f, 8.0f), 1e-5f, 0);
+    expectFloat4Near(resultVelocity, make_float4(1.0f, 3.0f, 0.0f, 8.0f), 1e-5f, 0);
+}
+
+TEST(PBFSolverCollisionTest, RestitutionUsesIncomingVelocityAtExistingContact) {
+    PBFSolver solver;
+    SimulationParams params = collisionParams();
+    params.particleRadius = 0.5f;
+    params.collisionRestitution = 0.5f;
+    initializeSolver(solver, 1, params);
+
+    const float4 position = make_float4(-1.5f, 5.0f, 5.0f, 1.0f);
+    const float4 velocity = make_float4(-2.0f, 0.0f, 0.0f, 2.0f);
+    solver.setParticles(&position, &velocity, 1);
+    solver.step();
+
+    float4 resultPosition{};
+    float4 resultVelocity{};
+    solver.copyPositionsToHost(&resultPosition, 1);
+    solver.copyVelocitiesToHost(&resultVelocity, 1);
+
+    EXPECT_NEAR(resultPosition.x, position.x, 1e-6f);
+    EXPECT_NEAR(resultVelocity.x, 1.0f, 1e-6f);
+}
+
+TEST(PBFSolverNeighborTest, RejectsNeighborOverflowBeforeConstraintSolve) {
+    constexpr std::size_t particleCount = 258;
+    PBFSolver solver;
+    SimulationParams params = validParams();
+    params.gravity = make_float3(0.0f, 0.0f, 0.0f);
+    params.particleRadius = 0.01f;
+    initializeSolver(solver, particleCount, params);
+
+    const std::vector<float4> positions(
+        particleCount, make_float4(5.0f, 5.0f, 5.0f, 1.0f)
+    );
+    const std::vector<float4> velocities(
+        particleCount, make_float4(0.0f, 0.0f, 0.0f, 0.0f)
+    );
+    solver.setParticles(positions.data(), velocities.data(), particleCount);
+
+    EXPECT_THROW(solver.step(), std::overflow_error);
 }
 
 TEST(PBFSolverCollisionTest, PropagatesInvalidColliderConfiguration) {

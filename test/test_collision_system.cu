@@ -124,6 +124,32 @@ TEST(CollisionSystemValidationTest, RejectsInvalidSolveArguments) {
     EXPECT_THROW(collisionSystem.solve(positions.data(), 1, -0.5f), std::invalid_argument);
     EXPECT_THROW(collisionSystem.solve(positions.data(), 1, nan), std::invalid_argument);
     EXPECT_NO_THROW(collisionSystem.solve(positions.data(), 0, 0.5f));
+
+    CollisionSystem narrowContainer({
+        make_float3(0.0f, 0.0f, 0.0f),
+        make_float3(0.5f, 1.0f, 1.0f)
+    });
+    EXPECT_THROW(narrowContainer.solve(positions.data(), 1, 0.3f), std::invalid_argument);
+}
+
+TEST(CollisionSystemValidationTest, RejectsInvalidContainerBoundsBeforeAllocation) {
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CollisionSystem collisionSystem;
+
+    EXPECT_THROW(
+        collisionSystem.setContainer({
+            make_float3(0.0f, 0.0f, 0.0f),
+            make_float3(0.0f, 1.0f, 1.0f)
+        }),
+        std::invalid_argument
+    );
+    EXPECT_THROW(
+        collisionSystem.setContainer({
+            make_float3(0.0f, 0.0f, 0.0f),
+            make_float3(1.0f, nan, 1.0f)
+        }),
+        std::invalid_argument
+    );
 }
 
 TEST(CollisionSystemValidationTest, RejectsInvalidVelocityArguments) {
@@ -177,6 +203,17 @@ TEST(CollisionSystemValidationTest, RejectsInvalidVelocityArguments) {
             positions.data(), velocities.data(), 0, 0.5f, 0.0f, 0.0f
         )
     );
+
+    CollisionSystem narrowContainer({
+        make_float3(0.0f, 0.0f, 0.0f),
+        make_float3(0.5f, 1.0f, 1.0f)
+    });
+    EXPECT_THROW(
+        narrowContainer.resolveVelocities(
+            positions.data(), velocities.data(), 1, 0.3f, 0.0f, 0.0f
+        ),
+        std::invalid_argument
+    );
 }
 
 TEST(CollisionSystemValidationTest, RejectsInvalidSphereRadii) {
@@ -200,6 +237,10 @@ TEST(CollisionSystemValidationTest, RejectsInvalidSphereRadii) {
         collisionSystem.setSpheres({ { make_float3(0.0f, 0.0f, 0.0f), infinity } }),
         std::invalid_argument
     );
+    EXPECT_THROW(
+        collisionSystem.setSpheres({ { make_float3(nan, 0.0f, 0.0f), 1.0f } }),
+        std::invalid_argument
+    );
 }
 
 TEST(CollisionSystemValidationTest, RejectsInvalidBoxHalfExtents) {
@@ -217,10 +258,18 @@ TEST(CollisionSystemValidationTest, RejectsInvalidBoxHalfExtents) {
             std::invalid_argument
         );
     }
+
+    EXPECT_THROW(
+        collisionSystem.setBoxes({
+            { make_float3(0.0f, nan, 0.0f), make_float3(1.0f, 1.0f, 1.0f) }
+        }),
+        std::invalid_argument
+    );
 }
 
 TEST(CollisionSystemValidationTest, RejectsInvalidPlaneNormals) {
     CollisionSystem collisionSystem(testContainer());
+    const float nan = std::numeric_limits<float>::quiet_NaN();
     const float infinity = std::numeric_limits<float>::infinity();
 
     EXPECT_THROW(
@@ -232,6 +281,12 @@ TEST(CollisionSystemValidationTest, RejectsInvalidPlaneNormals) {
     EXPECT_THROW(
         collisionSystem.setPlanes({
             { make_float3(0.0f, 0.0f, 0.0f), make_float3(infinity, 0.0f, 0.0f) }
+        }),
+        std::invalid_argument
+    );
+    EXPECT_THROW(
+        collisionSystem.setPlanes({
+            { make_float3(0.0f, 0.0f, nan), make_float3(0.0f, 1.0f, 0.0f) }
         }),
         std::invalid_argument
     );
@@ -250,6 +305,35 @@ TEST(CollisionSystemConfigurationTest, DefaultConstructionAndContainerUpdateWork
         make_float3(5.0f, 5.0f, 5.0f)
     });
     EXPECT_NEAR(solveOne(collisionSystem, make_float4(-6.0f, 0.0f, 0.0f, 8.0f)).x, -4.5f, 1e-5f);
+}
+
+TEST(CollisionSystemConfigurationTest, RejectsUseBeforeContainerConfiguration) {
+    CollisionSystem collisionSystem;
+    CudaBuffer<float4> positions(1);
+    CudaBuffer<float4> velocities(1);
+
+    EXPECT_THROW(collisionSystem.solve(positions.data(), 1, 0.5f), std::logic_error);
+    EXPECT_THROW(
+        collisionSystem.resolveVelocities(
+            positions.data(), velocities.data(), 1, 0.5f, 0.0f, 0.0f
+        ),
+        std::logic_error
+    );
+}
+
+TEST(CollisionSystemTest, ReportsNonConvergentColliderConstraints) {
+    CollisionSystem collisionSystem({
+        make_float3(-2.0f, -2.0f, -2.0f),
+        make_float3(2.0f, 2.0f, 2.0f)
+    });
+    collisionSystem.setSpheres({
+        {make_float3(-1.5f, 0.0f, 0.0f), 0.5f}
+    });
+    CudaBuffer<float4> positions(1);
+    const float4 position = make_float4(-1.6f, 0.0f, 0.0f, 1.0f);
+    positions.copyFromHostToDevice(&position, 1);
+
+    EXPECT_THROW(collisionSystem.solve(positions.data(), 1, 0.25f), std::runtime_error);
 }
 
 TEST(CollisionSystemConfigurationTest, EmptySettersAndClearMethodsRemoveColliders) {

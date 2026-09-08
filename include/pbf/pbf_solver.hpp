@@ -45,10 +45,12 @@ private:
     CudaBuffer<float4> predictedPositions_;
     CudaBuffer<float4> velocities_;
     CudaBuffer<float4> xsphVelocities_;
+    CudaBuffer<float4> collisionInputVelocities_;
     CudaBuffer<float4> vorticity_;
 
     CudaBuffer<uint32_t> neighbors_;
     CudaBuffer<int> neighborsCount_;
+    CudaBuffer<int> neighborOverflow_;
 
     CudaBuffer<float> density_;
     CudaBuffer<float> constraints_;

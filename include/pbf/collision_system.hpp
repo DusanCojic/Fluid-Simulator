@@ -28,6 +28,10 @@ public:
     void resolveVelocities(const float4* positions, float4* velocities,
         std::size_t particleCount, float particleRadius, float restitution, float friction);
 
+    void resolveVelocities(const float4* positions, const float4* incomingVelocities,
+        float4* velocities, std::size_t particleCount, float particleRadius,
+        float restitution, float friction);
+
 private:
     void solveContainer(float4* predictedPositions, std::size_t particleCount, float particleRadius);
 
@@ -39,6 +43,9 @@ private:
 
 
     CudaBuffer<Container> _container;
+    CudaBuffer<int> _correctionFlag;
+    Container _hostContainer{};
+    bool _hasContainer = false;
 
     CudaBuffer<SphereCollider> _spheres;
     CudaBuffer<BoxCollider> _boxes;
