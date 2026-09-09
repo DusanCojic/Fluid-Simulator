@@ -1,6 +1,17 @@
 #include "pbf/collision_kernels.cuh"
 
+#include <cfloat>
+
 namespace {
+
+// Projection back to a float position can leave a few ulps of penetration.
+// Such residuals are not evidence that the collision iteration failed.
+__device__ float projectionTolerance(float4 position, float3 origin, float radius) {
+    float scale = fmaxf(radius, fmaxf(fabsf(position.x), fabsf(origin.x)));
+    scale = fmaxf(scale, fmaxf(fabsf(position.y), fabsf(origin.y)));
+    scale = fmaxf(scale, fmaxf(fabsf(position.z), fabsf(origin.z)));
+    return 8.0f * FLT_EPSILON * scale;
+}
 
 __device__ void markCorrection(int* correctionFlag) {
     if (correctionFlag != nullptr)
@@ -17,7 +28,8 @@ __device__ void resolveContactVelocity(float3 normal, const float4& incomingVelo
         ? -restitution * incomingNormalVelocity
         : 0.0f;
 
-    if (normalVelocity >= targetNormalVelocity)
+    if (normalVelocity > targetNormalVelocity ||
+        (normalVelocity == targetNormalVelocity && incomingNormalVelocity >= 0.0f))
         return;
 
     const float3 tangent = make_float3(
@@ -92,6 +104,9 @@ void solveSpheresKernel(float4* predictedPositions, std::size_t particleCount,
         const float distanceSquared = offset.x * offset.x + offset.y * offset.y + offset.z * offset.z;
 
         if (distanceSquared < minDistance * minDistance) {
+            if (minDistance - sqrtf(distanceSquared) <=
+                projectionTolerance(position, sphere.center, minDistance))
+                continue;
             markCorrection(correctionFlag);
 
             if (distanceSquared == 0.0f) {
@@ -147,6 +162,9 @@ void solveBoxesKernel(float4* predictedPositions, std::size_t particleCount,
         const float distanceSquared = offset.x * offset.x + offset.y * offset.y + offset.z * offset.z;
 
         if (distanceSquared > 0.0f && distanceSquared < particleRadius * particleRadius) {
+            if (particleRadius - sqrtf(distanceSquared) <=
+                projectionTolerance(position, closest, particleRadius))
+                continue;
             markCorrection(correctionFlag);
             const float scale = particleRadius / sqrtf(distanceSquared);
             position.x = closest.x + offset.x * scale;
@@ -201,6 +219,9 @@ void solvePlanesKernel(float4* predictedPositions, std::size_t particleCount,
             (position.z - plane.point.z) * normal.z;
 
         if (distance < particleRadius) {
+            if (particleRadius - distance <=
+                projectionTolerance(position, plane.point, particleRadius))
+                continue;
             markCorrection(correctionFlag);
             const float correction = particleRadius - distance;
             position.x += normal.x * correction;

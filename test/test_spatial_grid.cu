@@ -21,6 +21,16 @@ struct GridResult {
     std::vector<int> cellEnd;
 };
 
+TEST(SpatialGridInitializationTest, FailedReinitializationPreservesConfiguration) {
+    SpatialGrid grid;
+    grid.initialize(2, make_float3(0, 0, 0), make_float3(2, 2, 2), 1.0f);
+    EXPECT_THROW(grid.initialize(100, make_float3(0, 0, 0),
+        make_float3(1e20f, 2, 2), 1.0f), std::length_error);
+    EXPECT_EQ(grid.maxParticles(), 2U);
+    EXPECT_EQ(grid.gridSize().x, 2);
+    EXPECT_FLOAT_EQ(grid.maxBounds().x, 2.0f);
+}
+
 float4 position(float x, float y, float z) {
     return make_float4(x, y, z, 1.0f);
 }
@@ -667,4 +677,19 @@ TEST(SpatialGridRandomizedTest, MatchesCpuReferenceForLargeParticleSet) {
     expectResultsEqual(actual, expected);
     EXPECT_TRUE(std::is_sorted(actual.sortedKeys.begin(), actual.sortedKeys.end()));
     expectParticleKeyAssociations(actual, positions, grid);
+}
+
+TEST_F(SpatialGridTest, ClampsFinitePositionsBeyondIntegerCoordinateRange) {
+    auto grid = initializedGrid();
+    const auto result = buildAndRead(grid, {
+        position(1e30f, 1e30f, 1e30f), position(-1e30f, -1e30f, -1e30f)
+    });
+    EXPECT_EQ(result.sortedKeys, (std::vector<std::uint32_t>{0, 23}));
+    EXPECT_EQ(result.sortedIndices, (std::vector<std::uint32_t>{1, 0}));
+}
+
+TEST(SpatialGridInitializationTest, RejectsNullBuildInputBeforeLaunching) {
+    SpatialGrid grid;
+    grid.initialize(2, make_float3(0, 0, 0), make_float3(2, 2, 2), 1.0f);
+    EXPECT_THROW(grid.build(nullptr, 1), std::invalid_argument);
 }

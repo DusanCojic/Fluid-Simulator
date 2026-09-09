@@ -351,3 +351,24 @@ TEST(NeighborSearchTest, ReportsMaximumNeighborOverflow) {
     for (int count : result.counts)
         EXPECT_EQ(count, particleCount - 1);
 }
+
+TEST(NeighborSearchTest, SupportRadiusBeyondIntegerRangeVisitsEachCellOnce) {
+    const std::vector<float4> positions = {
+        position(-0.1f, 0, 0), position(1, 1, 1), position(5.1f, 5.1f, 5.1f)
+    };
+    const auto result = runNeighborSearch(positions, 1e10f);
+    expectCorrect(result, positions, 1e10f);
+}
+
+TEST(NeighborSearchTest, AllSixDirectionsAndDiagonalAcrossCellBoundaries) {
+    const std::vector<float4> positions = {
+        position(2.01f,2.01f,2.01f), position(1.99f,2.01f,2.01f),
+        position(2.01f,1.99f,2.01f), position(2.01f,2.01f,1.99f),
+        position(1.99f,1.99f,1.99f), position(5.01f,5.01f,5.01f),
+        position(4.99f,4.99f,4.99f), position(-0.01f,-0.01f,-0.01f),
+        position(0.01f,0.01f,0.01f)
+    };
+    const auto result = runNeighborSearch(positions,0.1f);
+    expectCorrect(result,positions,0.1f);
+    expectSymmetric(result);
+}

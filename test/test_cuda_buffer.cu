@@ -369,3 +369,32 @@ TEST(CudaBufferTest, ThrowsWhenHostDestinationIsNull) {
         std::invalid_argument
     );
 }
+
+TEST(CudaBufferTest, OverflowReallocationPreservesAllocationAndContents) {
+    CudaBuffer<float4> buffer(1);
+    const float4 original = make_float4(1,2,3,4);
+    buffer.copyFromHostToDevice(&original,1);
+    auto* pointer = buffer.data();
+    EXPECT_THROW(buffer.allocate(std::numeric_limits<std::size_t>::max()/sizeof(float4)+1),
+        std::length_error);
+    EXPECT_EQ(buffer.data(),pointer);
+    EXPECT_EQ(buffer.size(),1U);
+    float4 actual{};
+    buffer.copyFromDeviceToHost(&actual,1);
+    EXPECT_EQ(actual.x,original.x);
+    EXPECT_EQ(actual.w,original.w);
+}
+
+TEST(CudaBufferTest, SelfMoveAndZeroLengthCopiesAreSafe) {
+    CudaBuffer<int> buffer(1);
+    const int input=42;
+    buffer.copyFromHostToDevice(&input,1);
+    auto* alias=&buffer;
+    buffer=std::move(*alias);
+    int actual=0;
+    buffer.copyFromDeviceToHost(&actual,1);
+    EXPECT_EQ(actual,input);
+    CudaBuffer<int> empty;
+    EXPECT_NO_THROW(empty.copyFromHostToDevice(nullptr,0));
+    EXPECT_NO_THROW(empty.copyFromDeviceToHost(nullptr,0));
+}

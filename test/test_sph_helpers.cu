@@ -149,3 +149,23 @@ TEST(SpikyGradientsTest, OppositeDisplacementGivesOppositeGradient) {
     EXPECT_FLOAT_EQ(first.y, -second.y);
     EXPECT_FLOAT_EQ(first.z, -second.z);
 }
+
+TEST(Poly6Test, RepresentableValuesSurviveExtremeIntermediatePowers) {
+    for (float h : {1e-5f, 1e5f}) {
+        const double expected = 315.0 / (64.0 * 3.14159265358979323846 * std::pow(double(h), 3));
+        const float actual = evaluatePoly6({0, 0, 0}, h);
+        EXPECT_TRUE(std::isfinite(actual));
+        EXPECT_NEAR(actual, expected, expected * 3e-6);
+        EXPECT_EQ(evaluatePoly6({h, 0, 0}, h), 0.0f);
+    }
+}
+
+TEST(SpikyGradientsTest, RepresentableValuesSurviveExtremeIntermediatePowers) {
+    const float h = 1e-7f;
+    const double expected = -45.0 / (4.0 * 3.14159265358979323846 * std::pow(double(h), 4));
+    const auto actual = evaluateSpikyGradients({h / 2, 0, 0}, h);
+    EXPECT_TRUE(std::isfinite(actual.x));
+    EXPECT_NEAR(actual.x, expected, -expected * 3e-6);
+    EXPECT_EQ(actual.y, 0.0f);
+    EXPECT_EQ(actual.z, 0.0f);
+}

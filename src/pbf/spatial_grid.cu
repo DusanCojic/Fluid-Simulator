@@ -26,11 +26,12 @@ void SpatialGrid::initialize(std::size_t maxParticles, float3 minBounds, float3 
     if (maxParticles > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::length_error("Particle count exceeds grid range index capacity");
 
+    SpatialGrid next;
     // Store configuration
-    _maxParticles = maxParticles;
-    _minBounds = minBounds;
-    _maxBounds = maxBounds;
-    _cellSize = cellSize;
+    next._maxParticles = maxParticles;
+    next._minBounds = minBounds;
+    next._maxBounds = maxBounds;
+    next._cellSize = cellSize;
 
     // Calculate grid dimensions
     const auto cellCountForAxis = [cellSize](float minBound, float maxBound) {
@@ -47,50 +48,52 @@ void SpatialGrid::initialize(std::size_t maxParticles, float3 minBounds, float3 
         return static_cast<int>(count);
     };
 
-    _gridSize.x = cellCountForAxis(_minBounds.x, _maxBounds.x);
-    _gridSize.y = cellCountForAxis(_minBounds.y, _maxBounds.y);
-    _gridSize.z = cellCountForAxis(_minBounds.z, _maxBounds.z);
+    next._gridSize.x = cellCountForAxis(next._minBounds.x, next._maxBounds.x);
+    next._gridSize.y = cellCountForAxis(next._minBounds.y, next._maxBounds.y);
+    next._gridSize.z = cellCountForAxis(next._minBounds.z, next._maxBounds.z);
 
     const std::size_t maxCells =
         static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max());
-    const std::size_t cellsX = static_cast<std::size_t>(_gridSize.x);
-    const std::size_t cellsY = static_cast<std::size_t>(_gridSize.y);
-    const std::size_t cellsZ = static_cast<std::size_t>(_gridSize.z);
+    const std::size_t cellsX = static_cast<std::size_t>(next._gridSize.x);
+    const std::size_t cellsY = static_cast<std::size_t>(next._gridSize.y);
+    const std::size_t cellsZ = static_cast<std::size_t>(next._gridSize.z);
 
     if (cellsX > maxCells / cellsY || cellsX * cellsY > maxCells / cellsZ)
         throw std::length_error("Spatial grid exceeds 32-bit key capacity");
 
-    _numCells = cellsX * cellsY * cellsZ;
+    next._numCells = cellsX * cellsY * cellsZ;
 
     // Allocate per-particle buffers
-    _keys.allocate(_maxParticles);
-    _indices.allocate(_maxParticles);
+    next._keys.allocate(next._maxParticles);
+    next._indices.allocate(next._maxParticles);
 
-    _sortedKeys.allocate(_maxParticles);
-    _sortedIndices.allocate(_maxParticles);
+    next._sortedKeys.allocate(next._maxParticles);
+    next._sortedIndices.allocate(next._maxParticles);
 
     // Allocate per-cell buffers
-    _cellStart.allocate(_numCells);
-    _cellEnd.allocate(_numCells);
+    next._cellStart.allocate(next._numCells);
+    next._cellEnd.allocate(next._numCells);
 
     // Ask CUB how much temporary storage radix sort needs
-    _sortTempStorageBytes = 0;
+    next._sortTempStorageBytes = 0;
 
     cudaError_t error = cub::DeviceRadixSort::SortPairs(
         nullptr,
-        _sortTempStorageBytes,
-        _keys.data(),
-        _sortedKeys.data(),
-        _indices.data(),
-        _sortedIndices.data(),
-        _maxParticles
+        next._sortTempStorageBytes,
+        next._keys.data(),
+        next._sortedKeys.data(),
+        next._indices.data(),
+        next._sortedIndices.data(),
+        next._maxParticles
     );
 
     if (error != cudaSuccess)
         throw std::runtime_error(cudaGetErrorString(error));
 
     // Allocate CUB temporary storage once
-    _sortTempStorage.allocate(_sortTempStorageBytes);
+    next._sortTempStorage.allocate(next._sortTempStorageBytes);
+
+    *this = std::move(next);
 }
 
 // Computes the spatial grid key and original index for each particle.
@@ -134,6 +137,11 @@ void buildCellRanges(const std::uint32_t* sortedKeys, int* cellStart, int* cellE
 }
 
 void SpatialGrid::build(const float4* predictedPositions, std::size_t particleCount) {
+    if (_maxParticles == 0)
+        throw std::logic_error("SpatialGrid must be initialized before building");
+    if (predictedPositions == nullptr && particleCount != 0)
+        throw std::invalid_argument("predictedPositions must not be null");
+
     if (particleCount > _maxParticles)
         throw std::out_of_range(
             "Particle count exceeds maximum number of particles"

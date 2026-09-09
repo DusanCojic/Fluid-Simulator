@@ -98,6 +98,40 @@ SimulationParams collisionParams() {
 
 } // namespace
 
+TEST(PBFSolverParticleDataTest, FailedUploadPreservesActiveStateAndRejectsNonFiniteData) {
+    PBFSolver solver;
+    initializeSolver(solver, 1, validParams());
+    const float4 original = make_float4(2.0f, 3.0f, 4.0f, 1.0f);
+    const float4 velocity = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+    solver.setParticles(&original, &velocity, 1);
+    float4 replacement = make_float4(5.0f, 6.0f, 7.0f, 1.0f);
+    EXPECT_THROW(solver.setParticles(&replacement, nullptr, 1), std::invalid_argument);
+    float4 actual{};
+    solver.copyPositionsToHost(&actual, 1);
+    expectFloat4Near(actual, original, 0.0f, 0);
+    replacement.x = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_THROW(solver.setParticles(&replacement, &velocity, 1), std::invalid_argument);
+    replacement = velocity;
+    replacement.z = std::numeric_limits<float>::infinity();
+    EXPECT_THROW(solver.setParticles(&original, &replacement, 1), std::invalid_argument);
+}
+
+TEST(PBFSolverCollisionTest, ExistingInelasticContactStillAppliesFriction) {
+    PBFSolver solver;
+    auto params = collisionParams();
+    params.gravity = make_float3(0.0f, -9.8f, 0.0f);
+    params.collisionFriction = 0.25f;
+    initializeSolver(solver, 1, params);
+    const float4 position = make_float4(5.0f, -1.75f, 5.0f, 1.0f);
+    const float4 velocity = make_float4(2.0f, 0.0f, 0.0f, 0.0f);
+    solver.setParticles(&position, &velocity, 1);
+    solver.step();
+    float4 actual{};
+    solver.copyVelocitiesToHost(&actual, 1);
+    EXPECT_NEAR(actual.x, 1.5f, 1e-5f);
+    EXPECT_NEAR(actual.y, 0.0f, 1e-5f);
+}
+
 TEST(PBFSolverInitializationTest, RejectsCallsThatRequireInitialization) {
     PBFSolver solver;
     const float4 particle = make_float4(0.0f, 0.0f, 0.0f, 1.0f);

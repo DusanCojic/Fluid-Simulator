@@ -72,6 +72,11 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
     spatialGrid_.initialize(maxParticles, minBounds, maxBounds,
                             params.smoothingRadius);
 
+    // From here allocation failure leaves the solver inactive, so partially
+    // replaced buffers can never be used with the previous active count.
+    maxParticles_ = 0;
+    particleCount_ = 0;
+
     Container container;
     container.min = minBounds;
     container.max = maxBounds;
@@ -107,6 +112,17 @@ void PBFSolver::setParticles(const float4* positions, const float4* velocities,
     if (particleCount == 0) {
         particleCount_ = 0;
         return;
+    }
+
+    // Validate both arrays before either upload can change active state.
+    if (positions == nullptr || velocities == nullptr)
+        throw std::invalid_argument("Particle positions and velocities must not be null");
+    for (size_t i = 0; i < particleCount; ++i) {
+        if (!std::isfinite(positions[i].x) || !std::isfinite(positions[i].y) ||
+            !std::isfinite(positions[i].z) || !std::isfinite(velocities[i].x) ||
+            !std::isfinite(velocities[i].y) || !std::isfinite(velocities[i].z)) {
+            throw std::invalid_argument("Particle coordinates and velocities must be finite");
+        }
     }
 
     positions_.copyFromHostToDevice(positions, particleCount);

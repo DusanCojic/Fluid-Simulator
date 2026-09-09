@@ -1,8 +1,17 @@
 #include "pbf/collision_system.hpp"
 
 #include <cmath>
+#include <limits>
 
 namespace {
+
+int collisionBlockCount(std::size_t particleCount, int blockSize) {
+    const std::size_t blocks = particleCount / blockSize + (particleCount % blockSize != 0);
+    if (blocks > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        throw std::length_error("Particle count exceeds CUDA launch dimensions");
+    return static_cast<int>(blocks);
+}
+
 
 void validateParticleFitsContainer(const Container& container, float particleRadius) {
     const double particleDiameter = 2.0 * static_cast<double>(particleRadius);
@@ -55,11 +64,10 @@ void CollisionSystem::setSpheres(const std::vector<SphereCollider>& spheres) {
         }
     }
 
+    CudaBuffer<SphereCollider> next(spheres.size());
+    next.copyFromHostToDevice(spheres.data(), spheres.size());
+    _spheres = std::move(next);
     _sphereCount = spheres.size();
-
-    _spheres.allocate(_sphereCount);
-
-    _spheres.copyFromHostToDevice(spheres.data(), _sphereCount);
 }
 
 void CollisionSystem::clearSpheres() {
@@ -83,11 +91,10 @@ void CollisionSystem::setBoxes(const std::vector<BoxCollider>& boxes) {
         }
     }
 
+    CudaBuffer<BoxCollider> next(boxes.size());
+    next.copyFromHostToDevice(boxes.data(), boxes.size());
+    _boxes = std::move(next);
     _boxCount = boxes.size();
-
-    _boxes.allocate(_boxCount);
-
-    _boxes.copyFromHostToDevice(boxes.data(), _boxCount);
 }
 
 void CollisionSystem::clearBoxes() {
@@ -112,11 +119,10 @@ void CollisionSystem::setPlanes(const std::vector<PlaneCollider>& planes) {
         }
     }
 
+    CudaBuffer<PlaneCollider> next(planes.size());
+    next.copyFromHostToDevice(planes.data(), planes.size());
+    _planes = std::move(next);
     _planeCount = planes.size();
-
-    _planes.allocate(_planeCount);
-
-    _planes.copyFromHostToDevice(planes.data(), _planeCount);
 }
 
 void CollisionSystem::clearPlanes() {
@@ -198,7 +204,7 @@ void CollisionSystem::resolveVelocities(const float4* positions,
         throw std::invalid_argument("friction must be between zero and one");
 
     constexpr int blockSize = 256;
-    const int gridSize = static_cast<int>((particleCount + blockSize - 1) / blockSize);
+    const int gridSize = collisionBlockCount(particleCount, blockSize);
 
     resolveVelocitiesKernel<<<gridSize, blockSize>>>(
         positions, incomingVelocities, velocities, particleCount, _container.data(),
@@ -213,7 +219,7 @@ void CollisionSystem::resolveVelocities(const float4* positions,
 
 void CollisionSystem::solveContainer(float4* predictedPositions, std::size_t particleCount, float particleRadius) {
     constexpr int blockSize = 256;
-    const int gridSize = static_cast<int>((particleCount + blockSize - 1) / blockSize);
+    const int gridSize = collisionBlockCount(particleCount, blockSize);
 
     solveContainerKernel<<<gridSize, blockSize>>>(
         predictedPositions, 
@@ -230,7 +236,7 @@ void CollisionSystem::solveContainer(float4* predictedPositions, std::size_t par
 
 void CollisionSystem::solveSpheres(float4* predictedPositions, std::size_t particleCount, float particleRadius) {
     constexpr int blockSize = 256;
-    const int gridSize = static_cast<int>((particleCount + blockSize - 1) / blockSize);
+    const int gridSize = collisionBlockCount(particleCount, blockSize);
 
     solveSpheresKernel<<<gridSize, blockSize>>>(
         predictedPositions, particleCount, _spheres.data(), _sphereCount, particleRadius,
@@ -244,7 +250,7 @@ void CollisionSystem::solveSpheres(float4* predictedPositions, std::size_t parti
 
 void CollisionSystem::solveBoxes(float4* predictedPositions, std::size_t particleCount, float particleRadius) {
     constexpr int blockSize = 256;
-    const int gridSize = static_cast<int>((particleCount + blockSize - 1) / blockSize);
+    const int gridSize = collisionBlockCount(particleCount, blockSize);
 
     solveBoxesKernel<<<gridSize, blockSize>>>(
         predictedPositions, particleCount, _boxes.data(), _boxCount, particleRadius,
@@ -258,7 +264,7 @@ void CollisionSystem::solveBoxes(float4* predictedPositions, std::size_t particl
 
 void CollisionSystem::solvePlanes(float4* predictedPositions, std::size_t particleCount, float particleRadius) {
     constexpr int blockSize = 256;
-    const int gridSize = static_cast<int>((particleCount + blockSize - 1) / blockSize);
+    const int gridSize = collisionBlockCount(particleCount, blockSize);
 
     solvePlanesKernel<<<gridSize, blockSize>>>(
         predictedPositions, particleCount, _planes.data(), _planeCount, particleRadius,

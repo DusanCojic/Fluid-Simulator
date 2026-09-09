@@ -26,6 +26,25 @@ float4 solveOne(CollisionSystem& collisionSystem, float4 position, float particl
 
 } // namespace
 
+TEST(CollisionSystemTest, RoundedContactsConvergeDespiteFloatRounding) {
+    CollisionSystem system(testContainer());
+    system.setSpheres({{make_float3(1.3f, 2.1f, -0.7f), 0.7f}});
+    for (int i = 1; i <= 64; ++i) {
+        SCOPED_TRACE(i);
+        float4 result{};
+        ASSERT_NO_THROW(result = solveOne(system,
+            make_float4(1.3f + i * 0.001f, 2.2f, -0.65f, 1.0f), 0.1f));
+        const double x = result.x - 1.3f, y = result.y - 2.1f, z = result.z + 0.7f;
+        EXPECT_NEAR(std::sqrt(x*x + y*y + z*z), 0.8, 2e-6);
+    }
+    system.clearSpheres();
+    system.setBoxes({{make_float3(0.0f, 0.0f, 0.0f), make_float3(1.0f, 1.0f, 1.0f)}});
+    EXPECT_NO_THROW(solveOne(system, make_float4(1.01f, 1.03f, 0.0f, 1.0f), 0.1f));
+    system.clearBoxes();
+    system.setPlanes({{make_float3(0.0f, 0.0f, 0.0f), make_float3(1.0f, 2.0f, 3.0f)}});
+    EXPECT_NO_THROW(solveOne(system, make_float4(0.01f, 0.02f, 0.03f, 1.0f), 0.1f));
+}
+
 TEST(CollisionSystemTest, FloorStopsNormalVelocityAndDampsTangentVelocity) {
     const Container container{
         make_float3(0.0f, 0.0f, 0.0f),
@@ -426,4 +445,13 @@ TEST(CollisionSystemIntegrationTest, ResolvesMultipleColliderTypesAndVelocities)
     EXPECT_NEAR(velocities[0].x, 0.0f, 1e-5f);
     EXPECT_NEAR(velocities[1].x, 0.0f, 1e-5f);
     EXPECT_NEAR(velocities[2].y, 0.0f, 1e-5f);
+}
+
+TEST(CollisionSystemValidationTest, RejectsParticleCountThatOverflowsLaunchDimensions) {
+    CollisionSystem system(testContainer());
+    CudaBuffer<float4> positions(1), velocities(1);
+    const auto count = std::numeric_limits<std::size_t>::max();
+    EXPECT_THROW(system.solve(positions.data(), count, 0.1f), std::length_error);
+    EXPECT_THROW(system.resolveVelocities(positions.data(), velocities.data(), count,
+        0.1f, 0.0f, 0.0f), std::length_error);
 }

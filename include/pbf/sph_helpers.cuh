@@ -22,14 +22,15 @@ inline float poly6(float3 displacement, float smoothingRadius) {
     const float radiusSquared =
         smoothingRadius * smoothingRadius;
 
-    if (distanceSquared > radiusSquared)
+    if (distanceSquared >= radiusSquared)
         return 0.0f;
 
+    // Normalize the distance first to avoid overflowing intermediate powers of h.
     const float normalization =
-        315.0f / (64.0f * sph::pi * powf(smoothingRadius, 9.0f));
+        315.0f / (64.0f * sph::pi) / smoothingRadius / smoothingRadius / smoothingRadius;
 
     const float radiusDifference =
-        radiusSquared - distanceSquared;
+        1.0f - distanceSquared / radiusSquared;
 
     const float radiusDifferenceCubed =
         radiusDifference *
@@ -51,14 +52,15 @@ inline float3 spikyGradient(float3 displacement, float smoothingRadius) {
 
     const float distance = sqrtf(distanceSquared);
 
-    if (distance <= 0.0f || distance > smoothingRadius)
+    if (distance <= 0.0f || distance >= smoothingRadius)
         return {0.0f, 0.0f, 0.0f};
 
+    // Normalize the distance first to avoid overflowing intermediate powers of h.
     const float normalization =
-        -45.0f / (sph::pi * powf(smoothingRadius, 6.0f));
+        -45.0f / sph::pi / smoothingRadius / smoothingRadius / smoothingRadius / smoothingRadius;
 
     const float radiusDifference =
-        smoothingRadius - distance;
+        1.0f - distance / smoothingRadius;
 
     const float distanceTerm =
         radiusDifference * radiusDifference;

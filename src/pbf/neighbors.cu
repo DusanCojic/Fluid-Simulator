@@ -21,24 +21,27 @@ void findNeighbors(const float4* predictedPositions, const uint32_t* sortedIndic
     );
     const float smoothingRadiusSquared = smoothingRadius * smoothingRadius;
 
-    // Number of grid cells needed to cover the smoothing radius.
-    const int cellSearchRadius = static_cast<int>(ceilf(smoothingRadius / cellSize));
+    // Bound the search before integer conversion/addition. A support radius
+    // larger than the domain must visit the domain once, without overflowing
+    // signed offsets or looping over billions of invalid cells.
+    const double radius = ceil(static_cast<double>(smoothingRadius) / cellSize);
+    const int3 first = {
+        static_cast<int>(fmax(0.0, currentCell.x - radius)),
+        static_cast<int>(fmax(0.0, currentCell.y - radius)),
+        static_cast<int>(fmax(0.0, currentCell.z - radius))
+    };
+    const int3 last = {
+        static_cast<int>(fmin(static_cast<double>(gridSize.x - 1), currentCell.x + radius)),
+        static_cast<int>(fmin(static_cast<double>(gridSize.y - 1), currentCell.y + radius)),
+        static_cast<int>(fmin(static_cast<double>(gridSize.z - 1), currentCell.z + radius))
+    };
 
     int count = 0;
 
-    // Check every grid cell that can contain a neighbor.
-    for (int cellOffsetZ = -cellSearchRadius; cellOffsetZ <= cellSearchRadius; ++cellOffsetZ) {
-        for (int cellOffsetY = -cellSearchRadius; cellOffsetY <= cellSearchRadius; ++cellOffsetY) {
-            for (int cellOffsetX = -cellSearchRadius; cellOffsetX <= cellSearchRadius; ++cellOffsetX) {
-
-                int3 cell = {
-                    currentCell.x + cellOffsetX,
-                    currentCell.y + cellOffsetY,
-                    currentCell.z + cellOffsetZ
-                };
-
-                if (!isCellValid(cell, gridSize))
-                    continue;
+    for (int z = first.z; z <= last.z; ++z) {
+        for (int y = first.y; y <= last.y; ++y) {
+            for (int x = first.x; x <= last.x; ++x) {
+                const int3 cell = {x, y, z};
 
                 uint32_t key = cellToKey(cell, gridSize);
 
