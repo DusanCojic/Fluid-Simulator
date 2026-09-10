@@ -146,8 +146,8 @@ TEST(PbfSolverTest, ComputeDensityIncludesSelfAndNeighborsAndHandlesPartialBlock
 
     std::vector<std::uint32_t> neighbors(particleCount * maxNeighbors, 0);
     neighbors[0] = 1;
-    neighbors[1] = 2;
-    neighbors[2] = 3;
+    neighbors[particleCount] = 2;
+    neighbors[2 * particleCount] = 3;
     std::vector<int> neighborCounts(particleCount, 0);
     neighborCounts[0] = maxNeighbors;
 
@@ -162,7 +162,8 @@ TEST(PbfSolverTest, ComputeDensityIncludesSelfAndNeighborsAndHandlesPartialBlock
 
     computeDensity<<<(particleCount + blockSize - 1) / blockSize, blockSize>>>(
         devicePositions.data(), deviceNeighbors.data(), deviceNeighborCounts.data(), maxNeighbors,
-        particleCount, smoothingRadius, particleMass, deviceDensity.data(), deviceConstraints.data(), restDensity
+        particleCount, smoothingRadius, particleMass, deviceDensity.data(),
+        deviceConstraints.data(), restDensity, particleCount
     );
     ASSERT_EQ(cudaSuccess, cudaGetLastError());
     ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
@@ -201,8 +202,8 @@ TEST(PbfSolverTest, ComputeLambdaUsesAllGradientsAndZeroNeighborRegularization) 
     positions[3] = make_float4(0.0f, 0.0f, 1.25f, -2.0f);
     std::vector<std::uint32_t> neighbors(particleCount * maxNeighbors, 0);
     neighbors[0] = 1;
-    neighbors[1] = 2;
-    neighbors[2] = 3;
+    neighbors[particleCount] = 2;
+    neighbors[2 * particleCount] = 3;
     std::vector<int> neighborCounts(particleCount, 0);
     neighborCounts[0] = maxNeighbors;
     std::vector<float> constraints(particleCount, 0.0f);
@@ -223,7 +224,7 @@ TEST(PbfSolverTest, ComputeLambdaUsesAllGradientsAndZeroNeighborRegularization) 
     computeLambda<<<(particleCount + blockSize - 1) / blockSize, blockSize>>>(
         devicePositions.data(), deviceNeighbors.data(), deviceNeighborCounts.data(), maxNeighbors,
         deviceConstraints.data(), particleCount, smoothingRadius, particleMass, restDensity,
-        epsilon, deviceLambdas.data()
+        epsilon, deviceLambdas.data(), particleCount
     );
     ASSERT_EQ(cudaSuccess, cudaGetLastError());
     ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
@@ -256,8 +257,8 @@ TEST(PbfSolverTest, ComputeDeltaPositionAppliesLambdaCorrectionAndLeavesWZero) {
     positions[3] = make_float4(0.0f, 0.0f, 1.25f, -1.0f);
     std::vector<std::uint32_t> neighbors(particleCount * maxNeighbors, 0);
     neighbors[0] = 1;
-    neighbors[1] = 2;
-    neighbors[2] = 3;
+    neighbors[particleCount] = 2;
+    neighbors[2 * particleCount] = 3;
     std::vector<int> neighborCounts(particleCount, 0);
     neighborCounts[0] = maxNeighbors;
     std::vector<float> lambdas(particleCount, 0.0f);
@@ -278,7 +279,7 @@ TEST(PbfSolverTest, ComputeDeltaPositionAppliesLambdaCorrectionAndLeavesWZero) {
     computeDeltaPosition<<<(particleCount + blockSize - 1) / blockSize, blockSize>>>(
         devicePositions.data(), deviceNeighbors.data(), deviceNeighborCounts.data(), maxNeighbors,
         deviceLambdas.data(), particleCount, smoothingRadius, particleMass, restDensity,
-        0.0f, 0, 0.0f, deviceDeltas.data()
+        0.0f, 0, 0.0f, deviceDeltas.data(), particleCount
     );
     ASSERT_EQ(cudaSuccess, cudaGetLastError());
     ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
@@ -475,7 +476,7 @@ TEST(XsphViscosityTest, DisabledLeavesVelocitiesUnchanged) {
     applyXsphViscosity<<<1, 32>>>(
         devicePositions.data(), deviceNeighbors.data(), deviceNeighborCounts.data(),
         maxNeighbors, deviceInputVelocities.data(), deviceOutputVelocities.data(),
-        positions.size(), 1.0f, 0.0f
+        positions.size(), 1.0f, 0.0f, positions.size()
     );
     ASSERT_EQ(cudaSuccess, cudaGetLastError());
     ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
@@ -527,7 +528,7 @@ TEST(XsphViscosityTest, NoNeighborsAndEqualVelocitiesLeaveVelocityUnchanged) {
     applyXsphViscosity<<<1, 32>>>(
         devicePositions.data(), deviceNeighbors.data(), deviceNeighborCounts.data(),
         maxNeighbors, deviceVelocities.data(), deviceOutputVelocities.data(),
-        positions.size(), 1.0f, 0.25f
+        positions.size(), 1.0f, 0.25f, positions.size()
     );
     ASSERT_EQ(cudaSuccess, cudaGetLastError());
     ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
@@ -557,7 +558,7 @@ TEST(XsphViscosityTest, AppliesPoly6WeightedJacobiVelocityCorrection) {
         make_float4(10.0f, -2.0f, 1.0f, 6.0f)
     };
     // Particle 2 is deliberately listed for particle 0 but lies outside h.
-    const std::vector<uint32_t> neighbors = {1, 2, 0, 0, 0, 0};
+    const std::vector<uint32_t> neighbors = {1, 0, 0, 2, 0, 0};
     const std::vector<int> neighborCounts = {2, 0, 0};
 
     CudaBuffer<float4> devicePositions(positions.size());
@@ -573,7 +574,7 @@ TEST(XsphViscosityTest, AppliesPoly6WeightedJacobiVelocityCorrection) {
     applyXsphViscosity<<<1, 32>>>(
         devicePositions.data(), deviceNeighbors.data(), deviceNeighborCounts.data(),
         maxNeighbors, deviceVelocities.data(), deviceOutputVelocities.data(),
-        positions.size(), smoothingRadius, viscosity
+        positions.size(), smoothingRadius, viscosity, positions.size()
     );
     ASSERT_EQ(cudaSuccess, cudaGetLastError());
     ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
@@ -624,17 +625,18 @@ TEST(VorticityConfinementTest, DisabledAndNoNeighborsLeaveVelocitiesUnchanged) {
     computeVorticity<<<1, 32>>>(
         devicePositions.data(), deviceVelocities.data(), deviceNeighbors.data(),
         deviceNeighborCounts.data(), maxNeighbors, positions.size(), 1.0f,
-        deviceVorticity.data()
+        deviceVorticity.data(), positions.size()
     );
     applyVorticityConfinement<<<1, 32>>>(
         devicePositions.data(), deviceNeighbors.data(), deviceNeighborCounts.data(),
         maxNeighbors, deviceVorticity.data(), deviceVelocities.data(), deviceOutput.data(),
-        positions.size(), 1.0f, 0.1f, 0.0f
+        positions.size(), 1.0f, 0.1f, 0.0f, positions.size()
     );
     applyVorticityConfinement<<<1, 32>>>(
         devicePositions.data(), deviceNeighbors.data(), deviceNeighborCounts.data(),
         maxNeighbors, deviceVorticity.data(), deviceVelocities.data(),
-        deviceNoNeighborOutput.data(), positions.size(), 1.0f, 0.1f, 2.0f
+        deviceNoNeighborOutput.data(), positions.size(), 1.0f, 0.1f, 2.0f,
+        positions.size()
     );
     ASSERT_EQ(cudaSuccess, cudaGetLastError());
     ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
@@ -668,7 +670,7 @@ TEST(VorticityConfinementTest, UniformVelocityAndZeroEtaProduceFiniteUnchangedOu
         make_float4(0.0f, 0.5f, 0.0f, 3.0f)
     };
     const std::vector<float4> velocities(positions.size(), make_float4(2.0f, -1.0f, 0.5f, 9.0f));
-    const std::vector<uint32_t> neighbors = {1, 2, 0, 2, 0, 1};
+    const std::vector<uint32_t> neighbors = {1, 0, 0, 2, 2, 1};
     const std::vector<int> neighborCounts = {2, 2, 2};
 
     CudaBuffer<float4> devicePositions(positions.size());
@@ -684,10 +686,10 @@ TEST(VorticityConfinementTest, UniformVelocityAndZeroEtaProduceFiniteUnchangedOu
 
     computeVorticity<<<1, 32>>>(devicePositions.data(), deviceVelocities.data(),
         deviceNeighbors.data(), deviceNeighborCounts.data(), maxNeighbors, positions.size(), 1.0f,
-        deviceVorticity.data());
+        deviceVorticity.data(), positions.size());
     applyVorticityConfinement<<<1, 32>>>(devicePositions.data(), deviceNeighbors.data(),
         deviceNeighborCounts.data(), maxNeighbors, deviceVorticity.data(), deviceVelocities.data(),
-        deviceOutput.data(), positions.size(), 1.0f, 0.1f, 3.0f);
+        deviceOutput.data(), positions.size(), 1.0f, 0.1f, 3.0f, positions.size());
     ASSERT_EQ(cudaSuccess, cudaGetLastError());
     ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
 
@@ -724,13 +726,13 @@ TEST(VorticityConfinementTest, MatchesCpuReferenceAndDoesNotModifyInputVelocity)
         make_float4(0.0f, 0.5f, 0.0f, 5.0f),
         make_float4(-0.5f, 0.0f, 0.0f, 6.0f)
     };
-    const std::vector<uint32_t> neighbors = {1, 2, 0, 2, 0, 1};
+    const std::vector<uint32_t> neighbors = {1, 0, 0, 2, 2, 1};
     const std::vector<int> neighborCounts = {2, 2, 2};
 
     std::vector<float3> expectedOmega(positions.size(), make_float3(0.0f, 0.0f, 0.0f));
     for (std::size_t i = 0; i < positions.size(); ++i) {
         for (int offset = 0; offset < neighborCounts[i]; ++offset) {
-            const uint32_t j = neighbors[i * maxNeighbors + offset];
+            const uint32_t j = neighbors[offset * positions.size() + i];
             const float3 displacement = make_float3(positions[i].x - positions[j].x,
                                                       positions[i].y - positions[j].y,
                                                       positions[i].z - positions[j].z);
@@ -751,7 +753,7 @@ TEST(VorticityConfinementTest, MatchesCpuReferenceAndDoesNotModifyInputVelocity)
     for (std::size_t i = 0; i < positions.size(); ++i) {
         float3 eta = make_float3(0.0f, 0.0f, 0.0f);
         for (int offset = 0; offset < neighborCounts[i]; ++offset) {
-            const uint32_t j = neighbors[i * maxNeighbors + offset];
+            const uint32_t j = neighbors[offset * positions.size() + i];
             const float3 displacement = make_float3(positions[i].x - positions[j].x,
                                                       positions[i].y - positions[j].y,
                                                       positions[i].z - positions[j].z);
@@ -784,10 +786,11 @@ TEST(VorticityConfinementTest, MatchesCpuReferenceAndDoesNotModifyInputVelocity)
 
     computeVorticity<<<1, 32>>>(devicePositions.data(), deviceVelocities.data(),
         deviceNeighbors.data(), deviceNeighborCounts.data(), maxNeighbors, positions.size(),
-        smoothingRadius, deviceVorticity.data());
+        smoothingRadius, deviceVorticity.data(), positions.size());
     applyVorticityConfinement<<<1, 32>>>(devicePositions.data(), deviceNeighbors.data(),
         deviceNeighborCounts.data(), maxNeighbors, deviceVorticity.data(), deviceVelocities.data(),
-        deviceOutput.data(), positions.size(), smoothingRadius, dt, strength);
+        deviceOutput.data(), positions.size(), smoothingRadius, dt, strength,
+        positions.size());
     ASSERT_EQ(cudaSuccess, cudaGetLastError());
     ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
 

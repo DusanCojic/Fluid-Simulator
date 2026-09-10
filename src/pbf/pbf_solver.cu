@@ -33,6 +33,15 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
     if (maxParticles > static_cast<size_t>(std::numeric_limits<int>::max()))
         throw std::length_error("Particle count exceeds CUDA kernel index range");
 
+    constexpr size_t neighborStrideAlignment = kBlockSize;
+    const size_t neighborParticleStride =
+        ((maxParticles + neighborStrideAlignment - 1) / neighborStrideAlignment) *
+        neighborStrideAlignment;
+    if (neighborParticleStride > std::numeric_limits<size_t>::max() /
+                                     static_cast<size_t>(kMaxNeighbors)) {
+        throw std::length_error("Neighbor buffer size overflows size_t");
+    }
+
     if (!std::isfinite(params.dt) || params.dt <= 0.0f ||
         !std::isfinite(params.restDensity) || params.restDensity <= 0.0f ||
         !std::isfinite(params.particleMass) || params.particleMass <= 0.0f ||
@@ -88,7 +97,13 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
     xsphVelocities_.allocate(maxParticles);
     collisionInputVelocities_.allocate(maxParticles);
     vorticity_.allocate(maxParticles);
-    neighbors_.allocate(maxParticles * static_cast<size_t>(kMaxNeighbors));
+    reorderedPositions_.allocate(maxParticles);
+    reorderedPredictedPositions_.allocate(maxParticles);
+    reorderedVelocities_.allocate(maxParticles);
+    reorderedCollisionInputVelocities_.allocate(maxParticles);
+    stableParticleIds_.allocate(maxParticles);
+    reorderedStableParticleIds_.allocate(maxParticles);
+    neighbors_.allocate(neighborParticleStride * static_cast<size_t>(kMaxNeighbors));
     neighborsCount_.allocate(maxParticles);
     neighborOverflow_.allocate(1);
     density_.allocate(maxParticles);
@@ -98,6 +113,7 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
 
     maxParticles_ = maxParticles;
     particleCount_ = 0;
+    neighborParticleStride_ = neighborParticleStride;
     params_ = params;
 }
 
@@ -127,7 +143,34 @@ void PBFSolver::setParticles(const float4* positions, const float4* velocities,
 
     positions_.copyFromHostToDevice(positions, particleCount);
     velocities_.copyFromHostToDevice(velocities, particleCount);
+    const int gridSize = static_cast<int>(
+        (particleCount + kBlockSize - 1) / kBlockSize
+    );
+    initializeStableParticleIds<<<gridSize, kBlockSize>>>(
+        stableParticleIds_.data(), particleCount
+    );
+    checkKernelLaunch();
     particleCount_ = particleCount;
+}
+
+void PBFSolver::reorderWorkingSet() {
+    const int gridSize = static_cast<int>(
+        (particleCount_ + kBlockSize - 1) / kBlockSize
+    );
+    gatherSolverState<<<gridSize, kBlockSize>>>(
+        spatialGrid_.sortedIndices(), positions_.data(), predictedPositions_.data(),
+        velocities_.data(), collisionInputVelocities_.data(), stableParticleIds_.data(),
+        reorderedPositions_.data(), reorderedPredictedPositions_.data(),
+        reorderedVelocities_.data(), reorderedCollisionInputVelocities_.data(),
+        reorderedStableParticleIds_.data(), particleCount_
+    );
+    checkKernelLaunch();
+
+    std::swap(positions_, reorderedPositions_);
+    std::swap(predictedPositions_, reorderedPredictedPositions_);
+    std::swap(velocities_, reorderedVelocities_);
+    std::swap(collisionInputVelocities_, reorderedCollisionInputVelocities_);
+    std::swap(stableParticleIds_, reorderedStableParticleIds_);
 }
 
 void PBFSolver::setSpheres(const std::vector<SphereCollider>& spheres) {
@@ -168,15 +211,17 @@ void PBFSolver::step() {
 
         for (int iteration = 0; iteration < params_.solverIterations; ++iteration) {
             spatialGrid_.build(predictedPositions_.data(), particleCount_);
+            reorderWorkingSet();
 
             neighborOverflow_.fillBytes(0);
 
             findNeighbors<<<gridSize, kBlockSize>>>(
-                predictedPositions_.data(), spatialGrid_.sortedIndices(),
+                predictedPositions_.data(),
                 spatialGrid_.cellStart(), spatialGrid_.cellEnd(),
                 spatialGrid_.gridSize(), spatialGrid_.minBounds(),
                 spatialGrid_.cellSize(), particleCount_, params_.smoothingRadius,
                 neighbors_.data(), neighborsCount_.data(), kMaxNeighbors,
+                neighborParticleStride_,
                 neighborOverflow_.data()
             );
             checkKernelLaunch();
@@ -190,7 +235,7 @@ void PBFSolver::step() {
                 predictedPositions_.data(), neighbors_.data(), neighborsCount_.data(),
                 kMaxNeighbors, particleCount_, params_.smoothingRadius,
                 params_.particleMass, density_.data(), constraints_.data(),
-                params_.restDensity
+                params_.restDensity, neighborParticleStride_
             );
             checkKernelLaunch();
 
@@ -198,7 +243,7 @@ void PBFSolver::step() {
                 predictedPositions_.data(), neighbors_.data(), neighborsCount_.data(),
                 kMaxNeighbors, constraints_.data(), particleCount_,
                 params_.smoothingRadius, params_.particleMass, params_.restDensity,
-                params_.lambdaEpsilon, lambda_.data()
+                params_.lambdaEpsilon, lambda_.data(), neighborParticleStride_
             );
             checkKernelLaunch();
 
@@ -207,7 +252,7 @@ void PBFSolver::step() {
                 kMaxNeighbors, lambda_.data(), particleCount_,
                 params_.smoothingRadius, params_.particleMass, params_.restDensity,
                 params_.scorrK, params_.scorrN, params_.scorrDeltaQ,
-                deltaPosition_.data()
+                deltaPosition_.data(), neighborParticleStride_
             );
             checkKernelLaunch();
 
@@ -227,13 +272,15 @@ void PBFSolver::step() {
             // positions after the final solver neighbor build.  Rebuild before
             // post-solve velocity effects so they use final neighborhoods.
             spatialGrid_.build(predictedPositions_.data(), particleCount_);
+            reorderWorkingSet();
             neighborOverflow_.fillBytes(0);
             findNeighbors<<<gridSize, kBlockSize>>>(
-                predictedPositions_.data(), spatialGrid_.sortedIndices(),
+                predictedPositions_.data(),
                 spatialGrid_.cellStart(), spatialGrid_.cellEnd(),
                 spatialGrid_.gridSize(), spatialGrid_.minBounds(),
                 spatialGrid_.cellSize(), particleCount_, params_.smoothingRadius,
                 neighbors_.data(), neighborsCount_.data(), kMaxNeighbors,
+                neighborParticleStride_,
                 neighborOverflow_.data()
             );
             checkKernelLaunch();
@@ -254,7 +301,8 @@ void PBFSolver::step() {
             applyXsphViscosity<<<gridSize, kBlockSize>>>(
                 predictedPositions_.data(), neighbors_.data(), neighborsCount_.data(),
                 kMaxNeighbors, velocities_.data(), xsphVelocities_.data(), particleCount_,
-                params_.smoothingRadius, params_.xsphViscosity
+                params_.smoothingRadius, params_.xsphViscosity,
+                neighborParticleStride_
             );
             checkKernelLaunch();
             std::swap(velocities_, xsphVelocities_);
@@ -264,7 +312,7 @@ void PBFSolver::step() {
             computeVorticity<<<gridSize, kBlockSize>>>(
                 predictedPositions_.data(), velocities_.data(), neighbors_.data(),
                 neighborsCount_.data(), kMaxNeighbors, particleCount_,
-                params_.smoothingRadius, vorticity_.data()
+                params_.smoothingRadius, vorticity_.data(), neighborParticleStride_
             );
             checkKernelLaunch();
 
@@ -272,7 +320,7 @@ void PBFSolver::step() {
                 predictedPositions_.data(), neighbors_.data(), neighborsCount_.data(),
                 kMaxNeighbors, vorticity_.data(), velocities_.data(),
                 xsphVelocities_.data(), particleCount_, params_.smoothingRadius,
-                substepDt, params_.vorticityStrength
+                substepDt, params_.vorticityStrength, neighborParticleStride_
             );
             checkKernelLaunch();
             std::swap(velocities_, xsphVelocities_);
@@ -309,7 +357,17 @@ void PBFSolver::copyPositionsToHost(float4* positions, size_t particleCount) con
         throw std::out_of_range("Requested position count does not match active particles");
 
     if (particleCount != 0)
-        positions_.copyFromDeviceToHost(positions, particleCount);
+    {
+        const int gridSize = static_cast<int>(
+            (particleCount + kBlockSize - 1) / kBlockSize
+        );
+        scatterFloat4ByStableId<<<gridSize, kBlockSize>>>(
+            positions_.data(), stableParticleIds_.data(),
+            reorderedPositions_.data(), particleCount
+        );
+        checkKernelLaunch();
+        reorderedPositions_.copyFromDeviceToHost(positions, particleCount);
+    }
 }
 
 void PBFSolver::copyVelocitiesToHost(float4* velocities, size_t particleCount) const {
@@ -317,5 +375,15 @@ void PBFSolver::copyVelocitiesToHost(float4* velocities, size_t particleCount) c
         throw std::out_of_range("Requested velocity count does not match active particles");
 
     if (particleCount != 0)
-        velocities_.copyFromDeviceToHost(velocities, particleCount);
+    {
+        const int gridSize = static_cast<int>(
+            (particleCount + kBlockSize - 1) / kBlockSize
+        );
+        scatterFloat4ByStableId<<<gridSize, kBlockSize>>>(
+            velocities_.data(), stableParticleIds_.data(),
+            reorderedVelocities_.data(), particleCount
+        );
+        checkKernelLaunch();
+        reorderedVelocities_.copyFromDeviceToHost(velocities, particleCount);
+    }
 }

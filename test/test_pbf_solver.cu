@@ -502,6 +502,46 @@ TEST(PBFSolverStepTest, SeparatesTwoNeighboringParticlesSymmetrically) {
     EXPECT_FLOAT_EQ(resultVelocities[1].w, velocities[1].w);
 }
 
+TEST(PBFSolverParticleDataTest, SpatialReorderingPreservesOriginalApiOrder) {
+    PBFSolver solver;
+    SimulationParams params = validParams();
+    params.gravity = make_float3(0.0f, 0.0f, 0.0f);
+    params.restDensity = selfDensity(params.particleMass, params.smoothingRadius);
+    initializeSolver(solver, 5, params);
+
+    // Reverse spatial order forces a non-identity working-set permutation.
+    const std::vector<float4> positions = {
+        make_float4(9.0f, 5.0f, 5.0f, 11.0f),
+        make_float4(7.0f, 5.0f, 5.0f, 12.0f),
+        make_float4(5.0f, 5.0f, 5.0f, 13.0f),
+        make_float4(3.0f, 5.0f, 5.0f, 14.0f),
+        make_float4(1.0f, 5.0f, 5.0f, 15.0f)
+    };
+    const std::vector<float4> velocities = {
+        make_float4(0.1f, 0.0f, 0.0f, 21.0f),
+        make_float4(0.2f, 0.0f, 0.0f, 22.0f),
+        make_float4(0.3f, 0.0f, 0.0f, 23.0f),
+        make_float4(0.4f, 0.0f, 0.0f, 24.0f),
+        make_float4(0.5f, 0.0f, 0.0f, 25.0f)
+    };
+    solver.setParticles(positions.data(), velocities.data(), positions.size());
+    solver.step();
+
+    std::vector<float4> actualPositions(positions.size());
+    std::vector<float4> actualVelocities(velocities.size());
+    solver.copyPositionsToHost(actualPositions.data(), actualPositions.size());
+    solver.copyVelocitiesToHost(actualVelocities.data(), actualVelocities.size());
+
+    for (std::size_t i = 0; i < positions.size(); ++i) {
+        const float4 expectedPosition = make_float4(
+            positions[i].x + params.dt * velocities[i].x,
+            positions[i].y, positions[i].z, positions[i].w
+        );
+        expectFloat4Near(actualPositions[i], expectedPosition, 1e-5f, i);
+        expectFloat4Near(actualVelocities[i], velocities[i], 1e-5f, i);
+    }
+}
+
 TEST(PBFSolverRunTest, ExplicitFrameCountIsIndependentOfSolverIterations) {
     PBFSolver solver;
     SimulationParams params = validParams();

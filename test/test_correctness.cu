@@ -49,17 +49,39 @@ void checkNeighborhoods(const std::vector<float4>& positions, float h,
     const std::size_t n = positions.size();
     devicePositions.copyFromHostToDevice(positions.data(), n);
     grid.build(devicePositions.data(), n);
-    findNeighbors<<<(n+255)/256, 256>>>(devicePositions.data(), grid.sortedIndices(),
-        grid.cellStart(), grid.cellEnd(), grid.gridSize(), grid.minBounds(),
-        grid.cellSize(), n, h, neighbors.data(), counts.data(), capacity);
-    ASSERT_EQ(cudaGetLastError(), cudaSuccess);
-    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     const auto keys = readDevice(grid.sortedKeys(), n);
     const auto indices = readDevice(grid.sortedIndices(), n);
+    std::vector<float4> sortedPositions(n);
+    for (std::size_t i = 0; i < n; ++i)
+        sortedPositions[i] = positions[indices[i]];
+    CudaBuffer<float4> sortedDevicePositions(n);
+    CudaBuffer<uint32_t> sortedNeighbors(n * capacity);
+    CudaBuffer<int> sortedCounts(n);
+    sortedDevicePositions.copyFromHostToDevice(sortedPositions.data(), n);
+    findNeighbors<<<(n+255)/256, 256>>>(sortedDevicePositions.data(),
+        grid.cellStart(), grid.cellEnd(), grid.gridSize(), grid.minBounds(),
+        grid.cellSize(), n, h, sortedNeighbors.data(), sortedCounts.data(),
+        capacity, n);
+    ASSERT_EQ(cudaGetLastError(), cudaSuccess);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     const auto starts = readDevice(grid.cellStart(), grid.numCells());
     const auto ends = readDevice(grid.cellEnd(), grid.numCells());
-    const auto hostCounts = readDevice(counts.data(), n);
-    const auto hostNeighbors = readDevice(neighbors.data(), n*capacity);
+    const auto sortedHostCounts = readDevice(sortedCounts.data(), n);
+    const auto sortedHostNeighbors = readDevice(sortedNeighbors.data(), n*capacity);
+    std::vector<int> hostCounts(n);
+    std::vector<uint32_t> hostNeighbors(n * capacity);
+    for (std::size_t sortedParticle = 0; sortedParticle < n; ++sortedParticle) {
+        ASSERT_LE(sortedHostCounts[sortedParticle], capacity);
+        const std::size_t originalParticle = indices[sortedParticle];
+        hostCounts[originalParticle] = sortedHostCounts[sortedParticle];
+        for (int offset = 0; offset < sortedHostCounts[sortedParticle]; ++offset) {
+            const uint32_t sortedNeighbor =
+                sortedHostNeighbors[offset * n + sortedParticle];
+            hostNeighbors[offset * n + originalParticle] = indices[sortedNeighbor];
+        }
+    }
+    counts.copyFromHostToDevice(hostCounts.data(), n);
+    neighbors.copyFromHostToDevice(hostNeighbors.data(), n * capacity);
     std::vector<bool> seen(n, false);
     for (std::size_t i = 0; i < n; ++i) {
         ASSERT_LT(keys[i], grid.numCells());
@@ -79,8 +101,9 @@ void checkNeighborhoods(const std::vector<float4>& positions, float h,
             const float z = positions[i].z - positions[j].z;
             if (i != j && x*x+y*y+z*z <= h*h) expected.push_back(uint32_t(j));
         }
-        std::vector<uint32_t> actual(hostNeighbors.begin()+i*capacity,
-            hostNeighbors.begin()+i*capacity+hostCounts[i]);
+        std::vector<uint32_t> actual;
+        for (int offset = 0; offset < hostCounts[i]; ++offset)
+            actual.push_back(hostNeighbors[offset * n + i]);
         std::sort(actual.begin(), actual.end());
         ASSERT_EQ(actual, expected) << "particle " << i;
     }
@@ -117,11 +140,11 @@ TEST(CorrectnessReferenceTest, CoupledDensityLambdaAndCorrectionMatchDoublePreci
     checkNeighborhoods(positions, h, grid, dp, neighbors, counts, capacity);
     ASSERT_FALSE(HasFatalFailure());
     computeDensity<<<1,32>>>(dp.data(), neighbors.data(), counts.data(), capacity,
-        n, h, mass, density.data(), constraint.data(), rho0);
+        n, h, mass, density.data(), constraint.data(), rho0, n);
     computeLambda<<<1,32>>>(dp.data(), neighbors.data(), counts.data(), capacity,
-        constraint.data(), n, h, mass, rho0, epsilon, lambda.data());
+        constraint.data(), n, h, mass, rho0, epsilon, lambda.data(), n);
     computeDeltaPosition<<<1,32>>>(dp.data(), neighbors.data(), counts.data(), capacity,
-        lambda.data(), n, h, mass, rho0, k, 4, dq, delta.data());
+        lambda.data(), n, h, mass, rho0, k, 4, dq, delta.data(), n);
     ASSERT_EQ(cudaGetLastError(), cudaSuccess);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
     const auto densities = readDevice(density.data(), n);

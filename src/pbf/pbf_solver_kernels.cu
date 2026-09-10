@@ -13,11 +13,20 @@ bool hasValidNeighborCount(int neighborCount, int maxNeighbors) {
     return isValid;
 }
 
+__device__
+std::uint32_t neighborAt(const std::uint32_t* neighbors,
+                         std::size_t particleIndex, int neighborOffset,
+                         std::size_t particleStride) {
+    return neighbors[static_cast<std::size_t>(neighborOffset) * particleStride +
+                     particleIndex];
+}
+
 } // namespace
 
 __global__
 void computeDensity(const float4* predictedPosition, const uint32_t* neighbors, const int* neighborsCount, const int maxNeighbors,
-                    std::size_t particleCount, float smoothingRadius, float particleMass, float* density, float* constraints, const float restDensity) {
+                    std::size_t particleCount, float smoothingRadius, float particleMass, float* density, float* constraints, const float restDensity,
+                    std::size_t neighborParticleStride) {
 
     std::size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
@@ -30,7 +39,6 @@ void computeDensity(const float4* predictedPosition, const uint32_t* neighbors, 
         particleMass * poly6({0.0f, 0.0f, 0.0f}, smoothingRadius);
 
     const int neighborsCnt = neighborsCount[index];
-
     if (!hasValidNeighborCount(neighborsCnt, maxNeighbors)) {
         density[index] = CUDART_NAN_F;
         constraints[index] = CUDART_NAN_F;
@@ -38,7 +46,8 @@ void computeDensity(const float4* predictedPosition, const uint32_t* neighbors, 
     }
 
     for (int i = 0; i < neighborsCnt; ++i) {
-        uint32_t neighborIndex = neighbors[index * maxNeighbors + i];
+        const uint32_t neighborIndex =
+            neighborAt(neighbors, index, i, neighborParticleStride);
 
         const float4 neighborPosition = predictedPosition[neighborIndex];
 
@@ -59,7 +68,8 @@ void computeDensity(const float4* predictedPosition, const uint32_t* neighbors, 
 
 __global__
 void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, const int* neighborsCount, int maxNeighbors, 
-    const float* constraints, size_t particleCount, float smoothingRadius, float particleMass, float restDensity, float epsilon, float* lambdas) {
+    const float* constraints, size_t particleCount, float smoothingRadius, float particleMass, float restDensity, float epsilon, float* lambdas,
+    std::size_t neighborParticleStride) {
 
     const size_t index =
         static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -71,7 +81,6 @@ void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, c
     const float constraint = constraints[index];
 
     const int neighborsCnt = neighborsCount[index];
-
     if (!hasValidNeighborCount(neighborsCnt, maxNeighbors)) {
         lambdas[index] = CUDART_NAN_F;
         return;
@@ -84,7 +93,8 @@ void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, c
     float sumGradientSquared = 0.0f;
 
     for (int i = 0; i < neighborsCnt; ++i) {
-        const uint32_t neighborIndex = neighbors[index * maxNeighbors + i];
+        const uint32_t neighborIndex =
+            neighborAt(neighbors, index, i, neighborParticleStride);
 
         const float4 neighborPosition = predictedPosition[neighborIndex];
 
@@ -132,7 +142,8 @@ void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, c
 __global__
 void computeDeltaPosition(const float4* predictedPosition, const uint32_t* neighbors, const int* neighborsCount, int maxNeighbors, 
     const float* lambdas, size_t particleCount, float smoothingRadius, float particleMass, float restDensity,
-    float scorrK, int scorrN, float scorrDeltaQ, float4* deltaPositions) {
+    float scorrK, int scorrN, float scorrDeltaQ, float4* deltaPositions,
+    std::size_t neighborParticleStride) {
 
     const size_t index =
         static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -144,7 +155,6 @@ void computeDeltaPosition(const float4* predictedPosition, const uint32_t* neigh
     const float lambdaI = lambdas[index];
 
     const int neighborsCnt = neighborsCount[index];
-
     if (!hasValidNeighborCount(neighborsCnt, maxNeighbors)) {
         deltaPositions[index] = {
             CUDART_NAN_F,
@@ -159,7 +169,7 @@ void computeDeltaPosition(const float4* predictedPosition, const uint32_t* neigh
 
     for (int i = 0; i < neighborsCnt; ++i) {
         const uint32_t neighborIndex =
-            neighbors[index * maxNeighbors + i];
+            neighborAt(neighbors, index, i, neighborParticleStride);
 
         const float4 neighborPosition =
             predictedPosition[neighborIndex];
@@ -237,7 +247,7 @@ void updateVelocityAndPosition(float4* positions, const float4* predictedPositio
 __global__
 void applyXsphViscosity(const float4* predictedPositions, const uint32_t* neighbors, const int* neighborsCount, 
     int maxNeighbors, const float4* inputVelocities, float4* outputVelocities, std::size_t particleCount, 
-    float smoothingRadius, float xsphViscosity) {
+    float smoothingRadius, float xsphViscosity, std::size_t neighborParticleStride) {
     const std::size_t index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
@@ -246,7 +256,6 @@ void applyXsphViscosity(const float4* predictedPositions, const uint32_t* neighb
 
     const float4 velocity = inputVelocities[index];
     const int neighborsCnt = neighborsCount[index];
-
     if (!hasValidNeighborCount(neighborsCnt, maxNeighbors)) {
         outputVelocities[index] = {
             CUDART_NAN_F,
@@ -266,7 +275,8 @@ void applyXsphViscosity(const float4* predictedPositions, const uint32_t* neighb
     float3 correction = {0.0f, 0.0f, 0.0f};
 
     for (int neighborOffset = 0; neighborOffset < neighborsCnt; ++neighborOffset) {
-        const uint32_t neighborIndex = neighbors[index * maxNeighbors + neighborOffset];
+        const uint32_t neighborIndex =
+            neighborAt(neighbors, index, neighborOffset, neighborParticleStride);
         const float4 neighborPosition = predictedPositions[neighborIndex];
         const float4 neighborVelocity = inputVelocities[neighborIndex];
         const float3 displacement = {
@@ -293,7 +303,8 @@ __global__
 void computeVorticity(const float4* positions, const float4* velocities,
                       const uint32_t* neighbors, const int* neighborsCount,
                       int maxNeighbors, std::size_t particleCount,
-                      float smoothingRadius, float4* vorticity) {
+                      float smoothingRadius, float4* vorticity,
+                      std::size_t neighborParticleStride) {
     const std::size_t index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
@@ -311,7 +322,8 @@ void computeVorticity(const float4* positions, const float4* velocities,
     float3 omega = {0.0f, 0.0f, 0.0f};
 
     for (int neighborOffset = 0; neighborOffset < neighborsCnt; ++neighborOffset) {
-        const uint32_t neighborIndex = neighbors[index * maxNeighbors + neighborOffset];
+        const uint32_t neighborIndex =
+            neighborAt(neighbors, index, neighborOffset, neighborParticleStride);
         const float4 neighborPosition = positions[neighborIndex];
         const float4 neighborVelocity = velocities[neighborIndex];
         const float3 displacement = {
@@ -344,7 +356,8 @@ void applyVorticityConfinement(const float4* positions, const uint32_t* neighbor
                                float4* outputVelocities,
                                std::size_t particleCount,
                                float smoothingRadius, float dt,
-                               float vorticityStrength) {
+                               float vorticityStrength,
+                               std::size_t neighborParticleStride) {
     const std::size_t index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
 
@@ -366,7 +379,8 @@ void applyVorticityConfinement(const float4* positions, const uint32_t* neighbor
     float3 eta = {0.0f, 0.0f, 0.0f};
 
     for (int neighborOffset = 0; neighborOffset < neighborsCnt; ++neighborOffset) {
-        const uint32_t neighborIndex = neighbors[index * maxNeighbors + neighborOffset];
+        const uint32_t neighborIndex =
+            neighborAt(neighbors, index, neighborOffset, neighborParticleStride);
         const float4 neighborPosition = positions[neighborIndex];
         const float4 omegaJ = vorticity[neighborIndex];
         const float omegaJLength = sqrtf(
@@ -402,4 +416,46 @@ void applyVorticityConfinement(const float4* positions, const uint32_t* neighbor
         velocity.z + dt * confinement.z,
         velocity.w
     };
+}
+
+__global__
+void gatherSolverState(const std::uint32_t* sortedIndices,
+                       const float4* positions, const float4* predictedPositions,
+                       const float4* velocities, const float4* collisionInputVelocities,
+                       const std::uint32_t* stableParticleIds,
+                       float4* sortedPositions, float4* sortedPredictedPositions,
+                       float4* sortedVelocities, float4* sortedCollisionInputVelocities,
+                       std::uint32_t* sortedStableParticleIds,
+                       std::size_t particleCount) {
+    const std::size_t sortedIndex =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (sortedIndex >= particleCount)
+        return;
+
+    const std::uint32_t sourceIndex = sortedIndices[sortedIndex];
+    sortedPositions[sortedIndex] = positions[sourceIndex];
+    sortedPredictedPositions[sortedIndex] = predictedPositions[sourceIndex];
+    sortedVelocities[sortedIndex] = velocities[sourceIndex];
+    sortedCollisionInputVelocities[sortedIndex] = collisionInputVelocities[sourceIndex];
+    sortedStableParticleIds[sortedIndex] = stableParticleIds[sourceIndex];
+}
+
+__global__
+void initializeStableParticleIds(std::uint32_t* stableParticleIds,
+                                 std::size_t particleCount) {
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < particleCount)
+        stableParticleIds[index] = static_cast<std::uint32_t>(index);
+}
+
+__global__
+void scatterFloat4ByStableId(const float4* values,
+                             const std::uint32_t* stableParticleIds,
+                             float4* valuesInOriginalOrder,
+                             std::size_t particleCount) {
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index < particleCount)
+        valuesInOriginalOrder[stableParticleIds[index]] = values[index];
 }

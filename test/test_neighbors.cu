@@ -36,6 +36,7 @@ NeighborResult runNeighborSearch(
     );
 
     CudaBuffer<float4> devicePositions(positions.size());
+    CudaBuffer<float4> deviceSortedPositions(positions.size());
     CudaBuffer<std::uint32_t> deviceNeighbors(
         positions.size() * static_cast<std::size_t>(maxNeighbors)
     );
@@ -44,12 +45,25 @@ NeighborResult runNeighborSearch(
     devicePositions.copyFromHostToDevice(positions.data(), positions.size());
     grid.build(devicePositions.data(), positions.size());
 
+    std::vector<std::uint32_t> permutation(positions.size());
+    cudaError_t error = cudaMemcpy(
+        permutation.data(), grid.sortedIndices(),
+        permutation.size() * sizeof(std::uint32_t), cudaMemcpyDeviceToHost
+    );
+    if (error != cudaSuccess)
+        throw std::runtime_error(cudaGetErrorString(error));
+    std::vector<float4> sortedPositions(positions.size());
+    for (std::size_t i = 0; i < positions.size(); ++i)
+        sortedPositions[i] = positions[permutation[i]];
+    deviceSortedPositions.copyFromHostToDevice(
+        sortedPositions.data(), sortedPositions.size()
+    );
+
     constexpr int blockSize = 256;
     const int blockCount = static_cast<int>((positions.size() + blockSize - 1) / blockSize);
 
     findNeighbors<<<blockCount, blockSize>>>(
-        devicePositions.data(),
-        grid.sortedIndices(),
+        deviceSortedPositions.data(),
         grid.cellStart(),
         grid.cellEnd(),
         grid.gridSize(),
@@ -59,10 +73,11 @@ NeighborResult runNeighborSearch(
         smoothingRadius,
         deviceNeighbors.data(),
         deviceCounts.data(),
-        maxNeighbors
+        maxNeighbors,
+        positions.size()
     );
 
-    cudaError_t error = cudaGetLastError();
+    error = cudaGetLastError();
     if (error != cudaSuccess)
         throw std::runtime_error(cudaGetErrorString(error));
 
@@ -71,17 +86,26 @@ NeighborResult runNeighborSearch(
         throw std::runtime_error(cudaGetErrorString(error));
 
     NeighborResult result;
-    result.counts.resize(positions.size());
-    deviceCounts.copyFromDeviceToHost(result.counts.data(), positions.size());
+    std::vector<int> sortedCounts(positions.size());
+    deviceCounts.copyFromDeviceToHost(sortedCounts.data(), positions.size());
 
     std::vector<std::uint32_t> flatNeighbors(deviceNeighbors.size());
     deviceNeighbors.copyFromDeviceToHost(flatNeighbors.data(), flatNeighbors.size());
 
+    result.counts.resize(positions.size());
     result.neighbors.resize(positions.size());
-    for (std::size_t i = 0; i < positions.size(); ++i) {
-        const int storedCount = std::min(result.counts[i], maxNeighbors);
-        const auto begin = flatNeighbors.begin() + i * maxNeighbors;
-        result.neighbors[i] = {begin, begin + storedCount};
+    for (std::size_t sortedParticle = 0; sortedParticle < positions.size();
+         ++sortedParticle) {
+        const std::size_t originalParticle = permutation[sortedParticle];
+        result.counts[originalParticle] = sortedCounts[sortedParticle];
+        const int storedCount = std::min(sortedCounts[sortedParticle], maxNeighbors);
+        auto& output = result.neighbors[originalParticle];
+        output.reserve(storedCount);
+        for (int offset = 0; offset < storedCount; ++offset) {
+            const std::uint32_t sortedNeighbor =
+                flatNeighbors[offset * positions.size() + sortedParticle];
+            output.push_back(permutation[sortedNeighbor]);
+        }
     }
 
     return result;
@@ -371,4 +395,65 @@ TEST(NeighborSearchTest, AllSixDirectionsAndDiagonalAcrossCellBoundaries) {
     const auto result = runNeighborSearch(positions,0.1f);
     expectCorrect(result,positions,0.1f);
     expectSymmetric(result);
+}
+
+TEST(NeighborSearchTest, WritesSlotMajorNeighbors) {
+    const std::vector<float4> positions = {
+        position(3.1f, 1.0f, 1.0f),
+        position(0.1f, 1.0f, 1.0f),
+        position(3.3f, 1.0f, 1.0f),
+        position(0.3f, 1.0f, 1.0f),
+        position(0.5f, 1.0f, 1.0f)
+    };
+    constexpr float radius = 0.45f;
+    constexpr int maxNeighbors = 4;
+    constexpr std::size_t particleStride = 8;
+
+    SpatialGrid grid;
+    grid.initialize(positions.size(), {0.0f, 0.0f, 0.0f},
+                    {5.0f, 5.0f, 5.0f}, 1.0f);
+    CudaBuffer<float4> inputPositions(positions.size());
+    inputPositions.copyFromHostToDevice(positions.data(), positions.size());
+    grid.build(inputPositions.data(), positions.size());
+
+    std::vector<std::uint32_t> permutation(positions.size());
+    ASSERT_EQ(cudaSuccess, cudaMemcpy(
+        permutation.data(), grid.sortedIndices(),
+        permutation.size() * sizeof(std::uint32_t), cudaMemcpyDeviceToHost
+    ));
+    std::vector<float4> sortedPositions(positions.size());
+    for (std::size_t i = 0; i < positions.size(); ++i)
+        sortedPositions[i] = positions[permutation[i]];
+
+    CudaBuffer<float4> deviceSortedPositions(sortedPositions.size());
+    CudaBuffer<std::uint32_t> deviceNeighbors(particleStride * maxNeighbors);
+    CudaBuffer<int> deviceCounts(sortedPositions.size());
+    deviceSortedPositions.copyFromHostToDevice(
+        sortedPositions.data(), sortedPositions.size()
+    );
+    deviceNeighbors.fillBytes(-1);
+
+    findNeighbors<<<1, 32>>>(
+        deviceSortedPositions.data(), grid.cellStart(), grid.cellEnd(),
+        grid.gridSize(), grid.minBounds(), grid.cellSize(), sortedPositions.size(),
+        radius, deviceNeighbors.data(), deviceCounts.data(), maxNeighbors,
+        particleStride
+    );
+    ASSERT_EQ(cudaSuccess, cudaGetLastError());
+    ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
+
+    std::vector<int> counts(sortedPositions.size());
+    std::vector<std::uint32_t> flatNeighbors(deviceNeighbors.size());
+    deviceCounts.copyFromDeviceToHost(counts.data(), counts.size());
+    deviceNeighbors.copyFromDeviceToHost(flatNeighbors.data(), flatNeighbors.size());
+    const auto expected = bruteForce(sortedPositions, radius);
+
+    for (std::size_t particle = 0; particle < sortedPositions.size(); ++particle) {
+        ASSERT_EQ(counts[particle], expected[particle].size());
+        std::vector<std::uint32_t> actual;
+        for (int offset = 0; offset < counts[particle]; ++offset)
+            actual.push_back(flatNeighbors[offset * particleStride + particle]);
+        std::sort(actual.begin(), actual.end());
+        EXPECT_EQ(actual, expected[particle]) << "particle " << particle;
+    }
 }

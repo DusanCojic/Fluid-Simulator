@@ -34,8 +34,11 @@ public:
     void copyVelocitiesToHost(float4* velocities, size_t particleCount) const;
 
 private:
+    void reorderWorkingSet();
+
     size_t maxParticles_ = 0;
     size_t particleCount_ = 0;
+    size_t neighborParticleStride_ = 0;
 
     SimulationParams params_{};
 
@@ -47,6 +50,15 @@ private:
     CudaBuffer<float4> xsphVelocities_;
     CudaBuffer<float4> collisionInputVelocities_;
     CudaBuffer<float4> vorticity_;
+
+    // Destination buffers for the next spatial permutation. After each
+    // gather, these swap with the corresponding active working arrays.
+    mutable CudaBuffer<float4> reorderedPositions_;
+    CudaBuffer<float4> reorderedPredictedPositions_;
+    mutable CudaBuffer<float4> reorderedVelocities_;
+    CudaBuffer<float4> reorderedCollisionInputVelocities_;
+    CudaBuffer<uint32_t> stableParticleIds_;
+    CudaBuffer<uint32_t> reorderedStableParticleIds_;
 
     CudaBuffer<uint32_t> neighbors_;
     CudaBuffer<int> neighborsCount_;
