@@ -130,12 +130,13 @@ TEST(ArtificialPressureTest, ReturnsZeroWhenDisabled) {
     EXPECT_FLOAT_EQ(result, 0.0f);
 }
 
-TEST(PbfSolverTest, ComputeDensityIncludesSelfAndNeighborsAndHandlesPartialBlocks) {
+TEST(PbfSolverTest, ComputeLambdaAccumulatesDensityAndGradientsAcrossPartialBlocks) {
     constexpr std::size_t particleCount = 513;
     constexpr int maxNeighbors = 3;
     constexpr float smoothingRadius = 1.0f;
     constexpr float particleMass = 2.0f;
     constexpr float restDensity = 3.0f;
+    constexpr float epsilon = 0.01f;
     constexpr int blockSize = 256;
 
     std::vector<float4> positions(particleCount, make_float4(5.0f, 5.0f, 5.0f, 9.0f));
@@ -154,77 +155,15 @@ TEST(PbfSolverTest, ComputeDensityIncludesSelfAndNeighborsAndHandlesPartialBlock
     CudaBuffer<float4> devicePositions(particleCount);
     CudaBuffer<std::uint32_t> deviceNeighbors(neighbors.size());
     CudaBuffer<int> deviceNeighborCounts(particleCount);
-    CudaBuffer<float> deviceDensity(particleCount);
-    CudaBuffer<float> deviceConstraints(particleCount);
-    devicePositions.copyFromHostToDevice(positions.data(), particleCount);
-    deviceNeighbors.copyFromHostToDevice(neighbors.data(), neighbors.size());
-    deviceNeighborCounts.copyFromHostToDevice(neighborCounts.data(), particleCount);
-
-    computeDensity<<<(particleCount + blockSize - 1) / blockSize, blockSize>>>(
-        devicePositions.data(), deviceNeighbors.data(), deviceNeighborCounts.data(), maxNeighbors,
-        particleCount, smoothingRadius, particleMass, deviceDensity.data(),
-        deviceConstraints.data(), restDensity, particleCount
-    );
-    ASSERT_EQ(cudaSuccess, cudaGetLastError());
-    ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
-
-    std::vector<float> density(particleCount);
-    std::vector<float> constraints(particleCount);
-    deviceDensity.copyFromDeviceToHost(density.data(), particleCount);
-    deviceConstraints.copyFromDeviceToHost(constraints.data(), particleCount);
-
-    constexpr float pi = 3.14159265358979323846f;
-    const float selfWeight = 315.0f / (64.0f * pi);
-    const float neighborWeight = selfWeight * std::pow(1.0f - 0.5625f, 3.0f);
-    const float expectedDensity = particleMass * (selfWeight + neighborWeight);
-    const float expectedSelfDensity = particleMass * selfWeight;
-
-    EXPECT_NEAR(density[0], expectedDensity, 1e-5f);
-    EXPECT_NEAR(constraints[0], expectedDensity / restDensity - 1.0f, 1e-5f);
-    EXPECT_NEAR(density[1], expectedSelfDensity, 1e-5f);
-    EXPECT_NEAR(constraints[1], expectedSelfDensity / restDensity - 1.0f, 1e-5f);
-    EXPECT_NEAR(density.back(), expectedSelfDensity, 1e-5f);
-}
-
-TEST(PbfSolverTest, ComputeLambdaUsesAllGradientsAndZeroNeighborRegularization) {
-    constexpr std::size_t particleCount = 257;
-    constexpr int maxNeighbors = 3;
-    constexpr float smoothingRadius = 1.0f;
-    constexpr float particleMass = 2.0f;
-    constexpr float restDensity = 4.0f;
-    constexpr float epsilon = 0.01f;
-    constexpr int blockSize = 256;
-
-    std::vector<float4> positions(particleCount, make_float4(4.0f, 4.0f, 4.0f, 1.0f));
-    positions[0] = make_float4(0.0f, 0.0f, 0.0f, 8.0f);
-    positions[1] = make_float4(0.25f, 0.5f, 0.5f, -4.0f);
-    positions[2] = make_float4(0.0f, 0.6f, 0.8f, 6.0f);
-    positions[3] = make_float4(0.0f, 0.0f, 1.25f, -2.0f);
-    std::vector<std::uint32_t> neighbors(particleCount * maxNeighbors, 0);
-    neighbors[0] = 1;
-    neighbors[particleCount] = 2;
-    neighbors[2 * particleCount] = 3;
-    std::vector<int> neighborCounts(particleCount, 0);
-    neighborCounts[0] = maxNeighbors;
-    std::vector<float> constraints(particleCount, 0.0f);
-    constraints[0] = 0.5f;
-    constraints[1] = -0.25f;
-    constraints.back() = 0.75f;
-
-    CudaBuffer<float4> devicePositions(particleCount);
-    CudaBuffer<std::uint32_t> deviceNeighbors(neighbors.size());
-    CudaBuffer<int> deviceNeighborCounts(particleCount);
-    CudaBuffer<float> deviceConstraints(particleCount);
     CudaBuffer<float> deviceLambdas(particleCount);
     devicePositions.copyFromHostToDevice(positions.data(), particleCount);
     deviceNeighbors.copyFromHostToDevice(neighbors.data(), neighbors.size());
     deviceNeighborCounts.copyFromHostToDevice(neighborCounts.data(), particleCount);
-    deviceConstraints.copyFromHostToDevice(constraints.data(), particleCount);
 
     computeLambda<<<(particleCount + blockSize - 1) / blockSize, blockSize>>>(
         devicePositions.data(), deviceNeighbors.data(), deviceNeighborCounts.data(), maxNeighbors,
-        deviceConstraints.data(), particleCount, smoothingRadius, particleMass, restDensity,
-        epsilon, deviceLambdas.data(), particleCount
+        particleCount, smoothingRadius, particleMass, restDensity, epsilon,
+        deviceLambdas.data(), particleCount
     );
     ASSERT_EQ(cudaSuccess, cudaGetLastError());
     ASSERT_EQ(cudaSuccess, cudaDeviceSynchronize());
@@ -233,13 +172,20 @@ TEST(PbfSolverTest, ComputeLambdaUsesAllGradientsAndZeroNeighborRegularization) 
     deviceLambdas.copyFromDeviceToHost(lambdas.data(), particleCount);
 
     constexpr float pi = 3.14159265358979323846f;
-    const float gradient = 45.0f / pi * std::pow(0.25f, 2.0f);
+    const float selfWeight = 315.0f / (64.0f * pi);
+    const float neighborWeight = selfWeight * std::pow(1.0f - 0.5625f, 3.0f);
+    const float pairDensity = particleMass * (selfWeight + neighborWeight);
+    const float selfDensity = particleMass * selfWeight;
+    const float gradient = 45.0f / pi * std::pow(1.0f - 0.75f, 2.0f);
     const float gradientScale = particleMass / restDensity;
     const float gradientSum = 2.0f * std::pow(gradientScale * gradient, 2.0f);
 
-    EXPECT_NEAR(lambdas[0], -constraints[0] / (gradientSum + epsilon), 1e-5f);
-    EXPECT_NEAR(lambdas[1], -constraints[1] / epsilon, 1e-5f);
-    EXPECT_NEAR(lambdas.back(), -constraints.back() / epsilon, 1e-5f);
+    EXPECT_NEAR(
+        lambdas[0], -(pairDensity / restDensity - 1.0f) / (gradientSum + epsilon),
+        1e-5f
+    );
+    EXPECT_NEAR(lambdas[1], -(selfDensity / restDensity - 1.0f) / epsilon, 1e-5f);
+    EXPECT_NEAR(lambdas.back(), -(selfDensity / restDensity - 1.0f) / epsilon, 1e-5f);
 }
 
 TEST(PbfSolverTest, ComputeDeltaPositionAppliesLambdaCorrectionAndLeavesWZero) {

@@ -1,4 +1,3 @@
-#include "pbf/particle_data.hpp"
 #include "pbf/simulation_params.hpp"
 #include "pbf/integration.cuh"
 

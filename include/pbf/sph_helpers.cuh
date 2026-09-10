@@ -10,15 +10,8 @@ constexpr float pi = 3.14159265358979323846f;
 
 } // namespace sph
 
-// calculates how much one particle contributes to the estimated density around
-// another based on the distance between them
 __device__
-inline float poly6(float3 displacement, float smoothingRadius) {
-    const float distanceSquared =
-        displacement.x * displacement.x +
-        displacement.y * displacement.y +
-        displacement.z * displacement.z;
-
+inline float poly6FromDistanceSquared(float distanceSquared, float smoothingRadius) {
     const float radiusSquared =
         smoothingRadius * smoothingRadius;
 
@@ -40,16 +33,22 @@ inline float poly6(float3 displacement, float smoothingRadius) {
     return normalization * radiusDifferenceCubed;
 }
 
-
-// Computes the Spiky kernel gradient, which describes how the smoothing influence
-// changes with the distance and direction between two neighboring particles.
+// Calculates how much one particle contributes to the estimated density around
+// another based on the distance between them.
 __device__
-inline float3 spikyGradient(float3 displacement, float smoothingRadius) {
+inline float poly6(float3 displacement, float smoothingRadius) {
     const float distanceSquared =
         displacement.x * displacement.x +
         displacement.y * displacement.y +
         displacement.z * displacement.z;
 
+    return poly6FromDistanceSquared(distanceSquared, smoothingRadius);
+}
+
+__device__
+inline float3 spikyGradientFromDistanceSquared(float3 displacement,
+                                                float distanceSquared,
+                                                float smoothingRadius) {
     const float distance = sqrtf(distanceSquared);
 
     if (distance <= 0.0f || distance >= smoothingRadius)
@@ -81,5 +80,18 @@ inline float3 spikyGradient(float3 displacement, float smoothingRadius) {
     };
 }
 
+// Computes the Spiky kernel gradient, which describes how the smoothing influence
+// changes with the distance and direction between two neighboring particles.
+__device__
+inline float3 spikyGradient(float3 displacement, float smoothingRadius) {
+    const float distanceSquared =
+        displacement.x * displacement.x +
+        displacement.y * displacement.y +
+        displacement.z * displacement.z;
+
+    return spikyGradientFromDistanceSquared(
+        displacement, distanceSquared, smoothingRadius
+    );
+}
 
 #endif 

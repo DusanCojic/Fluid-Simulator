@@ -24,52 +24,11 @@ std::uint32_t neighborAt(const std::uint32_t* neighbors,
 } // namespace
 
 __global__
-void computeDensity(const float4* predictedPosition, const uint32_t* neighbors, const int* neighborsCount, const int maxNeighbors,
-                    std::size_t particleCount, float smoothingRadius, float particleMass, float* density, float* constraints, const float restDensity,
-                    std::size_t neighborParticleStride) {
-
-    std::size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-
-    if (index >= particleCount)
-        return;
-
-    const float4 particlePosition = predictedPosition[index];
-
-    float particleDensity =
-        particleMass * poly6({0.0f, 0.0f, 0.0f}, smoothingRadius);
-
-    const int neighborsCnt = neighborsCount[index];
-    if (!hasValidNeighborCount(neighborsCnt, maxNeighbors)) {
-        density[index] = CUDART_NAN_F;
-        constraints[index] = CUDART_NAN_F;
-        return;
-    }
-
-    for (int i = 0; i < neighborsCnt; ++i) {
-        const uint32_t neighborIndex =
-            neighborAt(neighbors, index, i, neighborParticleStride);
-
-        const float4 neighborPosition = predictedPosition[neighborIndex];
-
-        const float diffX = particlePosition.x - neighborPosition.x;
-        const float diffY = particlePosition.y - neighborPosition.y;
-        const float diffZ = particlePosition.z - neighborPosition.z;
-
-        const float3 displacement = {diffX, diffY, diffZ};
-
-        particleDensity +=
-            particleMass * poly6(displacement, smoothingRadius);
-    }
-
-    density[index] = particleDensity;
-
-    constraints[index] = particleDensity / restDensity - 1.0f;
-}
-
-__global__
-void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, const int* neighborsCount, int maxNeighbors, 
-    const float* constraints, size_t particleCount, float smoothingRadius, float particleMass, float restDensity, float epsilon, float* lambdas,
-    std::size_t neighborParticleStride) {
+void computeLambda(const float4* predictedPositions, const uint32_t* neighbors,
+                   const int* neighborsCount, int maxNeighbors,
+                   size_t particleCount, float smoothingRadius,
+                   float particleMass, float restDensity, float epsilon,
+                   float* lambdas, std::size_t neighborParticleStride) {
 
     const size_t index =
         static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -77,8 +36,7 @@ void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, c
     if (index >= particleCount)
         return;
 
-    const float4 particlePosition = predictedPosition[index];
-    const float constraint = constraints[index];
+    const float4 particlePosition = predictedPositions[index];
 
     const int neighborsCnt = neighborsCount[index];
     if (!hasValidNeighborCount(neighborsCnt, maxNeighbors)) {
@@ -89,6 +47,7 @@ void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, c
     const float gradientScale =
         particleMass / restDensity;
 
+    float density = particleMass * poly6({0.0f, 0.0f, 0.0f}, smoothingRadius);
     float3 gradientI = {0.0f, 0.0f, 0.0f};
     float sumGradientSquared = 0.0f;
 
@@ -96,7 +55,7 @@ void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, c
         const uint32_t neighborIndex =
             neighborAt(neighbors, index, i, neighborParticleStride);
 
-        const float4 neighborPosition = predictedPosition[neighborIndex];
+        const float4 neighborPosition = predictedPositions[neighborIndex];
 
         const float diffX =
             particlePosition.x - neighborPosition.x;
@@ -109,9 +68,16 @@ void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, c
 
         const float3 displacement =
             {diffX, diffY, diffZ};
+        const float distanceSquared =
+            diffX * diffX + diffY * diffY + diffZ * diffZ;
+
+        density += particleMass *
+            poly6FromDistanceSquared(distanceSquared, smoothingRadius);
 
         const float3 gradientW =
-            spikyGradient(displacement, smoothingRadius);
+            spikyGradientFromDistanceSquared(
+                displacement, distanceSquared, smoothingRadius
+            );
 
         const float3 gradientJ = {
             -gradientScale * gradientW.x,
@@ -134,8 +100,8 @@ void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, c
         gradientI.y * gradientI.y +
         gradientI.z * gradientI.z;
 
-    lambdas[index] =
-        -constraint / (sumGradientSquared + epsilon);
+    const float constraint = density / restDensity - 1.0f;
+    lambdas[index] = -constraint / (sumGradientSquared + epsilon);
 }
 
 

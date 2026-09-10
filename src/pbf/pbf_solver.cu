@@ -106,8 +106,6 @@ void PBFSolver::initialize(size_t maxParticles, float3 minBounds, float3 maxBoun
     neighbors_.allocate(neighborParticleStride * static_cast<size_t>(kMaxNeighbors));
     neighborsCount_.allocate(maxParticles);
     neighborOverflow_.allocate(1);
-    density_.allocate(maxParticles);
-    constraints_.allocate(maxParticles);
     lambda_.allocate(maxParticles);
     deltaPosition_.allocate(maxParticles);
 
@@ -231,19 +229,11 @@ void PBFSolver::step() {
             if (neighborOverflow != 0)
                 throw std::overflow_error("Particle neighbor count exceeds solver capacity");
 
-            computeDensity<<<gridSize, kBlockSize>>>(
-                predictedPositions_.data(), neighbors_.data(), neighborsCount_.data(),
-                kMaxNeighbors, particleCount_, params_.smoothingRadius,
-                params_.particleMass, density_.data(), constraints_.data(),
-                params_.restDensity, neighborParticleStride_
-            );
-            checkKernelLaunch();
-
             computeLambda<<<gridSize, kBlockSize>>>(
                 predictedPositions_.data(), neighbors_.data(), neighborsCount_.data(),
-                kMaxNeighbors, constraints_.data(), particleCount_,
-                params_.smoothingRadius, params_.particleMass, params_.restDensity,
-                params_.lambdaEpsilon, lambda_.data(), neighborParticleStride_
+                kMaxNeighbors, particleCount_, params_.smoothingRadius,
+                params_.particleMass, params_.restDensity, params_.lambdaEpsilon,
+                lambda_.data(), neighborParticleStride_
             );
             checkKernelLaunch();
 

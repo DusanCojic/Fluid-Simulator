@@ -14,14 +14,11 @@
 // Neighbor lists are slot-major, with particles contiguous for each neighbor
 // offset: neighbors[offset * neighborParticleStride + particle].
 __global__
-void computeDensity(const float4* predictedPosition, const uint32_t* neighbors, const int* neighborsCount, const int maxNeighbors,
-                    size_t particleCount, float smoothingRadius, float particleMass, float* density, float* constraints, const float restDensity,
-                    size_t neighborParticleStride);
-
-__global__
-void computeLambda(const float4* predictedPosition, const uint32_t* neighbors, const int* neighborsCount, int maxNeighbors, 
-    const float* constraints, size_t particleCount, float smoothingRadius, float particleMass, float restDensity, float epsilon, float* lambdas,
-    size_t neighborParticleStride);
+void computeLambda(const float4* predictedPositions, const uint32_t* neighbors,
+                   const int* neighborsCount, int maxNeighbors,
+                   size_t particleCount, float smoothingRadius,
+                   float particleMass, float restDensity, float epsilon,
+                   float* lambdas, size_t neighborParticleStride);
 
 
 __device__

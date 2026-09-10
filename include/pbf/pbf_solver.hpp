@@ -3,7 +3,6 @@
 
 
 #include "pbf/pbf_solver_kernels.cuh"
-#include "pbf/particle_data.hpp"
 #include "pbf/simulation_params.hpp"
 #include "pbf/integration.cuh"
 #include "pbf/neighbors.cuh"
@@ -64,8 +63,6 @@ private:
     CudaBuffer<int> neighborsCount_;
     CudaBuffer<int> neighborOverflow_;
 
-    CudaBuffer<float> density_;
-    CudaBuffer<float> constraints_;
     CudaBuffer<float> lambda_;
     CudaBuffer<float4> deltaPosition_;
 

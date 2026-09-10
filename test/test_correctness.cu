@@ -136,19 +136,15 @@ TEST(CorrectnessReferenceTest, CoupledDensityLambdaAndCorrectionMatchDoublePreci
     CudaBuffer<float4> dp(n), delta(n);
     CudaBuffer<uint32_t> neighbors(n*capacity);
     CudaBuffer<int> counts(n);
-    CudaBuffer<float> density(n), constraint(n), lambda(n);
+    CudaBuffer<float> lambda(n);
     checkNeighborhoods(positions, h, grid, dp, neighbors, counts, capacity);
     ASSERT_FALSE(HasFatalFailure());
-    computeDensity<<<1,32>>>(dp.data(), neighbors.data(), counts.data(), capacity,
-        n, h, mass, density.data(), constraint.data(), rho0, n);
     computeLambda<<<1,32>>>(dp.data(), neighbors.data(), counts.data(), capacity,
-        constraint.data(), n, h, mass, rho0, epsilon, lambda.data(), n);
+        n, h, mass, rho0, epsilon, lambda.data(), n);
     computeDeltaPosition<<<1,32>>>(dp.data(), neighbors.data(), counts.data(), capacity,
         lambda.data(), n, h, mass, rho0, k, 4, dq, delta.data(), n);
     ASSERT_EQ(cudaGetLastError(), cudaSuccess);
     ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
-    const auto densities = readDevice(density.data(), n);
-    const auto constraints = readDevice(constraint.data(), n);
     const auto lambdas = readDevice(lambda.data(), n);
     const auto deltas = readDevice(delta.data(), n);
     std::vector<double> referenceLambda(n);
@@ -165,8 +161,6 @@ TEST(CorrectnessReferenceTest, CoupledDensityLambdaAndCorrectionMatchDoublePreci
         denominator += squared(center);
         const double c = rho/rho0-1;
         referenceLambda[i] = -c/denominator;
-        EXPECT_NEAR(densities[i], rho, 2e-5*std::max(1.0,std::abs(rho)));
-        EXPECT_NEAR(constraints[i], c, 2e-5*std::max(1.0,std::abs(c)));
         EXPECT_NEAR(lambdas[i], referenceLambda[i], 2e-6*std::max(1.0,std::abs(referenceLambda[i])));
     }
     for (std::size_t i = 0; i < n; ++i) {
