@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.24)
 
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(CMAKE_CUDA_ARCHITECTURES native)
+endif()
+
 project(
     FluidSimulator
     VERSION 0.1.0
@@ -38,6 +42,19 @@ target_link_libraries(
     pbf
     PUBLIC
         CUDA::cudart
+)
+
+# ---------------------------------------------------------
+# Benchmark
+# ---------------------------------------------------------
+
+add_executable(pbf_benchmark benchmark/pbf_benchmark.cu)
+
+target_link_libraries(
+    pbf_benchmark
+    PRIVATE
+        FluidSimulator::pbf
+        CUDA::nvtx3
 )
 
 # ---------------------------------------------------------
