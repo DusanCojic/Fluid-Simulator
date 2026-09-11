@@ -9,6 +9,25 @@ void findNeighbors(const float4* predictedPositions,
                    int maxNeighbors, size_t particleStride,
                    int* overflowFlag) {
     const size_t index = static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+
+    // Particles are ordered by spatial cell before this kernel is launched, so
+    // neighbors frequently belong to the same CUDA block. Cache that block's
+    // positions to avoid repeatedly fetching them through indirect global
+    // memory accesses. The fallback keeps launches larger than the solver's
+    // normal 256-thread block size correct.
+    constexpr unsigned int cachedBlockCapacity = 256;
+    __shared__ float4 cachedBlockPositions[cachedBlockCapacity];
+    const bool cacheBlock = blockDim.x <= cachedBlockCapacity;
+    const size_t blockStart = static_cast<size_t>(blockIdx.x) * blockDim.x;
+    const size_t blockEnd = min(blockStart + blockDim.x, particleCount);
+
+    if (cacheBlock && index < particleCount)
+        cachedBlockPositions[threadIdx.x] = predictedPositions[index];
+
+    // Every thread must reach the barrier, including inactive threads in the
+    // final partial block.
+    __syncthreads();
+
     if (index >= particleCount)
         return;
 
@@ -43,7 +62,11 @@ void findNeighbors(const float4* predictedPositions,
                     if (static_cast<size_t>(neighborIndex) == index)
                         continue;
 
-                    const float4 neighborPos = predictedPositions[neighborIndex];
+                    const size_t neighbor = static_cast<size_t>(neighborIndex);
+                    const float4 neighborPos =
+                        cacheBlock && neighbor >= blockStart && neighbor < blockEnd
+                            ? cachedBlockPositions[neighbor - blockStart]
+                            : predictedPositions[neighborIndex];
                     const float diffX = currentPos.x - neighborPos.x;
                     const float diffY = currentPos.y - neighborPos.y;
                     const float diffZ = currentPos.z - neighborPos.z;
